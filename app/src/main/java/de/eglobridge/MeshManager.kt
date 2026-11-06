@@ -503,6 +503,8 @@ class MeshManager(
     }
 
     private fun onPaired() {
+        debugPackets = 0
+        BridgeLog.i("Geräte: " + devices.joinToString { "${it.name} [${it.meshId}] ${it.mac}" })
         // the pseudo-op "connected" has no callback; release the queue
         opDone()
         handler.removeCallbacks(connectTimeout)
@@ -518,11 +520,20 @@ class MeshManager(
 
     private fun u(b: Byte) = b.toInt() and 0xff
 
+    private var debugPackets = 0
+
     private fun handleNotification(raw: ByteArray) {
         val key = sessionKey ?: return
-        if (raw.size < 20) return
+        if (raw.size < 20) {
+            BridgeLog.w("Kurze Notification (${raw.size} B): ${MeshCrypto.hex(raw)}")
+            return
+        }
         val p = MeshCrypto.decryptPacket(key, connectedMac, raw)
         val cmd = u(p[7])
+        if (debugPackets < 60) {
+            debugPackets++
+            BridgeLog.i("RX %02x src=%d: %s".format(cmd, u(p[4]) * 256 + u(p[3]), MeshCrypto.hex(p)))
+        }
         val status = when (cmd) {
             R_ONLINE_STATUS -> {
                 val mode = u(p[12])
@@ -549,7 +560,10 @@ class MeshManager(
             else -> null
         }
         if (status == null) return
-        if (devices.none { it.meshId == status.meshId }) return
+        if (devices.none { it.meshId == status.meshId }) {
+            BridgeLog.w("Meldung von unbekannter Mesh-ID ${status.meshId} ignoriert")
+            return
+        }
 
         if (status.online) {
             lastSeen[status.meshId] = SystemClock.elapsedRealtime()
@@ -595,6 +609,7 @@ class MeshManager(
         val seq = ByteArray(3).also { random.nextBytes(it) }
         val pkt = MeshCrypto.makeCommandPacket(key, connectedMac, cmd.dest, cmd.command, cmd.data, seq)
         lastCommandAt = SystemClock.elapsedRealtime()
+        BridgeLog.i("TX %02x an %d: %s".format(cmd.command, cmd.dest, MeshCrypto.hex(cmd.data)))
         write(char, pkt, "cmd-%02x".format(cmd.command))
         if (commands.isNotEmpty()) {
             pumpScheduled = true
