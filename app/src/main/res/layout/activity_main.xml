@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <TextView
+            android:id="@+id/status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:padding="12dp"
+            android:background="#E3F2FD"
+            android:textSize="18sp"
+            android:text="Status: –" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="12dp">
+
+            <Button
+                android:id="@+id/btnStart"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Speichern &amp; Starten" />
+
+            <Button
+                android:id="@+id/btnStop"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Stoppen" />
+        </LinearLayout>
+
+        <TextView
+            style="@android:style/TextAppearance.Material.Title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="1. AwoX / EGLO Connect Konto" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Nur zum einmaligen Import der Mesh-Zugangsdaten und Lampenliste." />
+
+        <EditText
+            android:id="@+id/awoxUser"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="E-Mail"
+            android:inputType="textEmailAddress" />
+
+        <EditText
+            android:id="@+id/awoxPassword"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Passwort"
+            android:inputType="textPassword" />
+
+        <Button
+            android:id="@+id/btnImport"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Lampen aus AwoX-Cloud importieren" />
+
+        <TextView
+            android:id="@+id/devices"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:padding="8dp"
+            android:background="#F5F5F5"
+            android:text="Keine Lampen importiert" />
+
+        <TextView
+            style="@android:style/TextAppearance.Material.Title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="2. MQTT (Home Assistant Mosquitto)" />
+
+        <EditText
+            android:id="@+id/mqttHost"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Host / IP"
+            android:inputType="text" />
+
+        <EditText
+            android:id="@+id/mqttPort"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Port (1883)"
+            android:inputType="number" />
+
+        <EditText
+            android:id="@+id/mqttUser"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="MQTT-Benutzer"
+            android:inputType="text" />
+
+        <EditText
+            android:id="@+id/mqttPassword"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="MQTT-Passwort"
+            android:inputType="textPassword" />
+
+        <TextView
+            style="@android:style/TextAppearance.Material.Title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="3. Berechtigungen" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btnPerms"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Standort erlauben" />
+
+            <Button
+                android:id="@+id/btnBattery"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Akku-Optimierung aus" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="20dp">
+
+            <TextView
+                style="@android:style/TextAppearance.Material.Title"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Log" />
+
+            <Button
+                android:id="@+id/btnCopyLog"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Log kopieren" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/log"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="#212121"
+            android:fontFamily="monospace"
+            android:padding="8dp"
+            android:textColor="#E0E0E0"
+            android:textIsSelectable="true"
+            android:textSize="11sp" />
+    </LinearLayout>
+</ScrollView>

@@ -1,0 +1,29 @@
+# EGLO BLE Bridge
+
+Android-App, die ein altes Tablet zur **Brücke zwischen EGLO-Connect/AwoX-Bluetooth-Mesh-Lampen und Home Assistant** macht – ähnlich wie der ESP32-Hub [EspHome-AwoX-BLE-mesh-hub](https://github.com/fsaris/EspHome-AwoX-BLE-mesh-hub), nur ohne Zusatzhardware.
+
+- verbindet sich per Bluetooth LE mit einer Lampe im Mesh und erreicht darüber alle Lampen
+- meldet die Lampen per **MQTT Discovery** an Home Assistant (An/Aus, Helligkeit, Farbtemperatur, RGB)
+- läuft als Hintergrunddienst, startet nach Neustart automatisch
+- Diagnose-Entitäten in HA: Status, Log, Button „Neu verbinden“
+
+## Installation
+
+1. Auf dem Tablet die APK aus dem Release **[latest](../../releases/tag/latest)** herunterladen und installieren.
+2. App öffnen, AwoX/EGLO-Connect-Konto eintragen → **Lampen aus AwoX-Cloud importieren**.
+3. MQTT-Daten des Mosquitto-Brokers eintragen.
+4. **Standort erlauben** („Immer zulassen“) und **Akku-Optimierung aus**.
+5. **Speichern & Starten**.
+
+Die Lampen erscheinen in Home Assistant unter *Einstellungen → Geräte & Dienste → MQTT*.
+
+## Hinweise
+
+- Die alte HA-Integration „AwoX MESH control“ sollte deaktiviert werden, da die Lampen nur wenige gleichzeitige Verbindungen erlauben.
+- Die APK wird von GitHub Actions gebaut. Der Signierschlüssel (`app/debug.keystore`) liegt bewusst im Repo, damit jede neue Version als Update installiert werden kann. Es ist ein reiner Debug-Schlüssel ohne Schutzfunktion.
+
+## Danksagung
+
+Protokoll basierend auf [python-awox-mesh-light](https://github.com/Leiaz/python-awox-mesh-light) (Leiaz),
+[home-assistant-awox](https://github.com/fsaris/home-assistant-awox) und
+[EspHome-AwoX-BLE-mesh-hub](https://github.com/fsaris/EspHome-AwoX-BLE-mesh-hub) (fsaris).
