@@ -32,6 +32,10 @@ class MainActivity : Activity() {
     private lateinit var mqttPort: EditText
     private lateinit var mqttUser: EditText
     private lateinit var mqttPassword: EditText
+    private lateinit var updateStatus: TextView
+    private lateinit var btnInstallUpdate: Button
+    private var updateBusy = false
+    private var updateMsg = ""
 
     private val ui = Handler(Looper.getMainLooper())
     private val refresher = object : Runnable {
@@ -55,6 +59,8 @@ class MainActivity : Activity() {
         mqttPort = findViewById(R.id.mqttPort)
         mqttUser = findViewById(R.id.mqttUser)
         mqttPassword = findViewById(R.id.mqttPassword)
+        updateStatus = findViewById(R.id.updateStatus)
+        btnInstallUpdate = findViewById(R.id.btnInstallUpdate)
 
         awoxUser.setText(cfg.awoxUser)
         awoxPassword.setText(cfg.awoxPassword)
@@ -78,12 +84,16 @@ class MainActivity : Activity() {
             Toast.makeText(this, "Log kopiert", Toast.LENGTH_SHORT).show()
         }
 
+        findViewById<Button>(R.id.btnCheckUpdate).setOnClickListener { checkUpdate(manual = true) }
+        btnInstallUpdate.setOnClickListener { installUpdate() }
+
         if (!hasLocation()) requestPerms()
     }
 
     override fun onResume() {
         super.onResume()
         ui.post(refresher)
+        if (System.currentTimeMillis() - Updater.lastCheck > 60 * 60 * 1000L) checkUpdate(manual = false)
     }
 
     override fun onPause() {
@@ -95,6 +105,71 @@ class MainActivity : Activity() {
         val s = if (BridgeService.running) "läuft – ${BridgeService.meshState}" else "gestoppt"
         status.text = "Status: $s"
         logView.text = BridgeLog.snapshot().takeLast(120).reversed().joinToString("\n")
+        refreshUpdate()
+    }
+
+    // ---------------------------------------------------------------- self update
+
+    private fun refreshUpdate() {
+        val cur = Updater.currentVersionCode(this)
+        val latest = Updater.latest
+        val available = latest != null && latest.versionCode > cur
+        val base = "Installiert: ${Updater.currentVersionName(this)} (Build $cur)"
+        val line2 = when {
+            Updater.status.isNotEmpty() -> Updater.status
+            updateMsg.isNotEmpty() -> updateMsg
+            available -> "Neue Version verfügbar: ${latest!!.versionName} (Build ${latest.versionCode})"
+            latest != null -> "Aktuell – keine neuere Version auf GitHub"
+            else -> ""
+        }
+        updateStatus.text = if (line2.isEmpty()) base else "$base\n$line2"
+        btnInstallUpdate.isEnabled = available && !updateBusy
+    }
+
+    private fun checkUpdate(manual: Boolean) {
+        if (updateBusy) return
+        updateBusy = true
+        Updater.status = ""
+        updateMsg = "Suche nach Updates …"
+        Thread {
+            try {
+                val info = Updater.check(this)
+                updateMsg = ""
+                if (info != null) BridgeLog.i("Update verfügbar: ${info.versionName} (Build ${info.versionCode})")
+                else if (manual) ui.post { Toast.makeText(this, "Keine neue Version", Toast.LENGTH_SHORT).show() }
+            } catch (t: Throwable) {
+                updateMsg = "Update-Prüfung fehlgeschlagen: ${t.message}"
+            } finally {
+                updateBusy = false
+            }
+        }.start()
+    }
+
+    private fun installUpdate() {
+        if (!Updater.canInstall(this)) {
+            AlertDialog.Builder(this)
+                .setTitle("Installation erlauben")
+                .setMessage("Bitte im nächsten Bildschirm „Aus dieser Quelle zulassen“ für EGLO Bridge einschalten und danach erneut auf „Update installieren“ tippen.")
+                .setPositiveButton("Einstellungen öffnen") { _, _ ->
+                    startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+                }
+                .setNegativeButton("Abbrechen", null)
+                .show()
+            return
+        }
+        updateBusy = true
+        Updater.status = ""
+        Thread {
+            try {
+                Updater.downloadAndInstall(this) { msg -> updateMsg = msg }
+                updateMsg = "Bitte Installation bestätigen"
+            } catch (t: Throwable) {
+                BridgeLog.e("Update-Download fehlgeschlagen", t)
+                updateMsg = "Download fehlgeschlagen: ${t.message}"
+            } finally {
+                updateBusy = false
+            }
+        }.start()
     }
 
     private fun showDevices() {

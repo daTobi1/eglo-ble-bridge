@@ -73,12 +73,47 @@ class BridgeService : Service(), MeshListener {
         mqtt = MqttBridge(handler, m, version).also { it.start(cfg) }
         BridgeLog.listeners.add(logListener)
         m.start(cfg)
+        handler.postDelayed(updateCheck, 60 * 1000L)
+    }
+
+    private val updateCheck = object : Runnable {
+        override fun run() {
+            Thread {
+                try {
+                    val info = Updater.check(this@BridgeService)
+                    if (info != null) {
+                        BridgeLog.i("Update verfügbar: ${info.versionName} (Build ${info.versionCode})")
+                        notifyUpdate(info)
+                    }
+                } catch (t: Throwable) {
+                    BridgeLog.w("Update-Prüfung fehlgeschlagen: ${t.message}")
+                }
+            }.start()
+            handler.postDelayed(this, 6 * 60 * 60 * 1000L)
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun notifyUpdate(info: Updater.Info) {
+        val pi = PendingIntent.getActivity(
+            this, 1, Intent(this, MainActivity::class.java),
+            if (Build.VERSION.SDK_INT >= 23) PendingIntent.FLAG_IMMUTABLE else 0
+        )
+        val b = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, CHANNEL) else Notification.Builder(this)
+        val n = b.setContentTitle("EGLO Bridge: Update verfügbar")
+            .setContentText("Version ${info.versionName} – zum Installieren tippen")
+            .setSmallIcon(android.R.drawable.stat_sys_download_done)
+            .setContentIntent(pi)
+            .setAutoCancel(true)
+            .build()
+        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(2, n)
     }
 
     override fun onDestroy() {
         running = false
         meshState = "gestoppt"
         BridgeLog.listeners.remove(logListener)
+        handler.removeCallbacks(updateCheck)
         BridgeLog.i("Bridge gestoppt")
         mesh?.stop()
         mqtt?.markAllOffline()
