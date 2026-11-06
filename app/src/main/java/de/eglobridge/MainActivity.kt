@@ -103,9 +103,14 @@ class MainActivity : Activity() {
 
     private fun refresh() {
         val s = if (BridgeService.running) "läuft – ${BridgeService.meshState}" else "gestoppt"
-        status.text = "Status: $s"
-        logView.text = BridgeLog.snapshot().takeLast(120).reversed().joinToString("\n")
+        setIfChanged(status, "Status: $s")
+        setIfChanged(logView, BridgeLog.snapshot().takeLast(120).reversed().joinToString("\n"))
         refreshUpdate()
+    }
+
+    /** Only touch the view when the text really changed, so the ScrollView does not jump. */
+    private fun setIfChanged(v: TextView, text: String) {
+        if (v.text.toString() != text) v.text = text
     }
 
     // ---------------------------------------------------------------- self update
@@ -122,7 +127,7 @@ class MainActivity : Activity() {
             latest != null -> "Aktuell – keine neuere Version auf GitHub"
             else -> ""
         }
-        updateStatus.text = if (line2.isEmpty()) base else "$base\n$line2"
+        setIfChanged(updateStatus, if (line2.isEmpty()) base else "$base\n$line2")
         btnInstallUpdate.isEnabled = available && !updateBusy
     }
 

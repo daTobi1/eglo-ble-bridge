@@ -8,6 +8,8 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
+        android:descendantFocusability="beforeDescendants"
+        android:focusableInTouchMode="true"
         android:padding="20dp">
 
         <TextView
@@ -207,7 +209,8 @@
             android:fontFamily="monospace"
             android:padding="8dp"
             android:textColor="#E0E0E0"
-            android:textIsSelectable="true"
+            android:focusable="false"
+            android:focusableInTouchMode="false"
             android:textSize="11sp" />
     </LinearLayout>
 </ScrollView>
