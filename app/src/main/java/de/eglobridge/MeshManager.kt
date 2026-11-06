@@ -69,7 +69,7 @@ class MeshManager(
 
         private const val COMMAND_SPACING_MS = 180L
         private const val OP_TIMEOUT_MS = 8000L
-        private const val CONNECT_TIMEOUT_MS = 20000L
+        private const val CONNECT_TIMEOUT_MS = 35000L
         private const val SCAN_MS = 6000L
         private const val POLL_MS = 30000L
         private const val OFFLINE_AFTER_MS = 5 * 60 * 1000L
@@ -293,7 +293,13 @@ class MeshManager(
             BridgeLog.w("Zeitüberschreitung bei $connectedMac")
             closeGatt()
             setState(State.IDLE)
-            tryNextCandidate()
+            val n = (attemptsForMac[connectedMac] ?: 0) + 1
+            attemptsForMac[connectedMac] = n
+            if (n < 2 && scanRssi.containsKey(connectedMac)) {
+                // lamp is visible but direct connect timed out: try once more in autoConnect mode
+                candidates.addFirst(connectedMac)
+            }
+            handler.postDelayed({ tryNextCandidate() }, 1000)
         }
     }
 
@@ -305,11 +311,12 @@ class MeshManager(
         }
         connectedMac = mac
         setState(State.CONNECTING)
-        BridgeLog.i("Verbinde mit $mac …")
+        val auto = (attemptsForMac[mac] ?: 0) >= 1
+        BridgeLog.i("Verbinde mit $mac${if (auto) " (autoConnect)" else ""} …")
         gatt = if (Build.VERSION.SDK_INT >= 23) {
-            device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+            device.connectGatt(context, auto, gattCallback, BluetoothDevice.TRANSPORT_LE)
         } else {
-            device.connectGatt(context, false, gattCallback)
+            device.connectGatt(context, auto, gattCallback)
         }
         handler.postDelayed(connectTimeout, CONNECT_TIMEOUT_MS)
     }
