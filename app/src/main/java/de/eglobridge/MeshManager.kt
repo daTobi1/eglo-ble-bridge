@@ -109,6 +109,7 @@ class MeshManager(
     private val lastSeen = HashMap<Int, Long>()
     private val online = HashSet<Int>()
     private var preferredMac: String? = null
+    private val attemptsForMac = HashMap<String, Int>()
 
     val stateName: String get() = when (state) {
         State.CONNECTED -> "verbunden mit $connectedMac"
@@ -244,7 +245,8 @@ class MeshManager(
         handler.postDelayed({
             stopScan()
             buildCandidates()
-            tryNextCandidate()
+            // give the controller a moment after stopping the scan
+            handler.postDelayed({ tryNextCandidate() }, 500)
         }, SCAN_MS)
     }
 
@@ -254,15 +256,14 @@ class MeshManager(
 
     private fun buildCandidates() {
         val known = devices.map { it.mac }.distinct()
-        val sorted = known.sortedWith(
-            compareByDescending<String> { scanRssi[it] ?: -999 }
-                .thenByDescending { if (it == preferredMac) 1 else 0 }
-        )
-        candidates = ArrayDeque(sorted)
-        // AwoX devices found by scan that are not in the configured list come last
-        scanRssi.keys.filter { it !in known }.sortedByDescending { scanRssi[it] }.forEach { candidates.addLast(it) }
-        if (scanRssi.isNotEmpty()) {
-            BridgeLog.i("Verbindungsreihenfolge: " + candidates.joinToString { "$it(${scanRssi[it] ?: "?"})" })
+        val seen = known.filter { scanRssi.containsKey(it) }.sortedByDescending { scanRssi[it] }
+        val unseen = known.filter { !scanRssi.containsKey(it) }
+            .sortedByDescending { if (it == preferredMac) 1 else 0 }
+        candidates = ArrayDeque(seen + unseen)
+        attemptsForMac.clear()
+        if (scanRssi.isNotEmpty() || hasLocationPermission()) {
+            BridgeLog.i("Im Scan gefunden: " + (if (seen.isEmpty()) "keine bekannte Lampe" else
+                seen.joinToString { "$it(${scanRssi[it]})" }))
         }
     }
 
@@ -338,7 +339,13 @@ class MeshManager(
             scheduleReconnect(reconnectDelay)
         } else {
             BridgeLog.w("Verbindung zu $connectedMac fehlgeschlagen ($reason)")
-            tryNextCandidate()
+            val n = (attemptsForMac[connectedMac] ?: 0) + 1
+            attemptsForMac[connectedMac] = n
+            if (n < 2) {
+                // Android often reports GATT error 133 on the first attempt – retry the same lamp once
+                candidates.addFirst(connectedMac)
+            }
+            handler.postDelayed({ tryNextCandidate() }, 1500)
         }
     }
 
