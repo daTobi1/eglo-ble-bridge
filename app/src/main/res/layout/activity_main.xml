@@ -403,6 +403,12 @@
                 android:text="Apps installieren" />
         </LinearLayout>
 
+        <Button
+            android:id="@+id/btnWriteSettings"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Systemeinstellungen ändern (Bildschirm wirklich aus)" />
+
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

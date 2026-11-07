@@ -102,6 +102,11 @@ class Config(context: Context) {
         get() = p.getInt("kioskBrightness", 80)
         set(v) = p.edit().putInt("kioskBrightness", v).apply()
 
+    /** Android display timeout to restore after the kiosk switched the screen off (ms). */
+    var savedScreenTimeout: Int
+        get() = p.getInt("savedScreenTimeout", 0)
+        set(v) = p.edit().putInt("savedScreenTimeout", v).apply()
+
     var enabled: Boolean
         get() = p.getBoolean("enabled", false)
         set(v) = p.edit().putBoolean("enabled", v).apply()

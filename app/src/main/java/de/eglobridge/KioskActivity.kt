@@ -13,6 +13,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
+import android.provider.Settings
 import android.text.InputType
 import android.view.Gravity
 import android.view.MotionEvent
@@ -125,6 +126,8 @@ class KioskActivity : Activity(), KioskControl.Ui {
         }
         web.loadUrl(cfg.kioskUrl)
         ui.postDelayed(timeoutCheck, 30000)
+        // if the app was restarted while the screen was "off", put the display timeout back
+        restoreSystemTimeout()
     }
 
     private fun showError(msg: String) {
@@ -251,15 +254,42 @@ class KioskActivity : Activity(), KioskControl.Ui {
             overlay.visibility = View.GONE
             setBrightness(cfg.kioskBrightness)
             lastTouch = SystemClock.elapsedRealtime()
+            restoreSystemTimeout()
         } else {
             overlay.visibility = View.VISIBLE
             val lp = window.attributes
             lp.screenBrightness = 0.01f
             window.attributes = lp
-            // let Android switch the backlight off after its own display timeout
+            // really switch the display off: with "modify system settings" we shorten Android's
+            // display timeout for a moment, otherwise Android uses its own timeout
+            setShortSystemTimeout()
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
         KioskControl.screenOn = on
+    }
+
+    private fun canWriteSettings() = Build.VERSION.SDK_INT < 23 || Settings.System.canWrite(this)
+
+    private fun setShortSystemTimeout() {
+        if (!canWriteSettings()) return
+        try {
+            val current = Settings.System.getInt(contentResolver, Settings.System.SCREEN_OFF_TIMEOUT, 60000)
+            if (current > 5000) cfg.savedScreenTimeout = current
+            Settings.System.putInt(contentResolver, Settings.System.SCREEN_OFF_TIMEOUT, 5000)
+        } catch (t: Throwable) {
+            BridgeLog.w("Display-Timeout konnte nicht gesetzt werden: ${t.message}")
+        }
+    }
+
+    private fun restoreSystemTimeout() {
+        if (!canWriteSettings()) return
+        try {
+            val current = Settings.System.getInt(contentResolver, Settings.System.SCREEN_OFF_TIMEOUT, 60000)
+            if (current <= 5000) {
+                val back = cfg.savedScreenTimeout.takeIf { it > 5000 } ?: 60000
+                Settings.System.putInt(contentResolver, Settings.System.SCREEN_OFF_TIMEOUT, back)
+            }
+        } catch (_: Throwable) { }
     }
 
     override fun setBrightness(percent: Int) {

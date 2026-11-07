@@ -123,6 +123,11 @@ class MainActivity : Activity() {
                 startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
             } else Toast.makeText(this, "Einblenden ist erlaubt", Toast.LENGTH_SHORT).show()
         }
+        findViewById<Button>(R.id.btnWriteSettings).setOnClickListener {
+            if (Build.VERSION.SDK_INT >= 23 && !Settings.System.canWrite(this)) {
+                startActivity(Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse("package:$packageName")))
+            } else Toast.makeText(this, "Systemeinstellungen ändern ist erlaubt", Toast.LENGTH_SHORT).show()
+        }
         findViewById<Button>(R.id.btnInstallPerm).setOnClickListener {
             if (Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) {
                 startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
