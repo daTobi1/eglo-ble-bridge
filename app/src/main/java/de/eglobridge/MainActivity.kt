@@ -45,6 +45,7 @@ class MainActivity : Activity() {
     private lateinit var bridgeName: EditText
     private var sourceNames: List<String> = emptyList()
     private var updateBusy = false
+    private var promptedFor = -1
     private var updateMsg = ""
 
     private val ui = Handler(Looper.getMainLooper())
@@ -143,7 +144,8 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         ui.post(refresher)
-        if (System.currentTimeMillis() - Updater.lastCheck > 60 * 60 * 1000L) checkUpdate(manual = false)
+        // check on every app start / return to the app (independent of the bridge service)
+        if (System.currentTimeMillis() - Updater.lastCheck > 2 * 60 * 1000L) checkUpdate(manual = false)
     }
 
     override fun onPause() {
@@ -263,14 +265,30 @@ class MainActivity : Activity() {
             try {
                 val info = Updater.check(this)
                 updateMsg = ""
-                if (info != null) BridgeLog.i("Update verfügbar: ${info.versionName} (Build ${info.versionCode})")
-                else if (manual) ui.post { Toast.makeText(this, "Keine neue Version", Toast.LENGTH_SHORT).show() }
+                if (info != null) {
+                    BridgeLog.i("Update verfügbar: ${info.versionName} (Build ${info.versionCode})")
+                    ui.post { promptUpdate(info) }
+                } else if (manual) ui.post { Toast.makeText(this, "Keine neue Version", Toast.LENGTH_SHORT).show() }
             } catch (t: Throwable) {
                 updateMsg = "Update-Prüfung fehlgeschlagen: ${t.message}"
             } finally {
                 updateBusy = false
             }
         }.start()
+    }
+
+    /** Ask once per version and app session whether to install right away. */
+    private fun promptUpdate(info: Updater.Info) {
+        if (isFinishing || promptedFor == info.versionCode) return
+        promptedFor = info.versionCode
+        val notes = if (info.notes.isNotBlank()) "\n\nÄnderung: ${info.notes}" else ""
+        AlertDialog.Builder(this)
+            .setTitle("Update verfügbar")
+            .setMessage("Version ${info.versionName} (Build ${info.versionCode}) ist verfügbar.\n" +
+                "Installiert: ${Updater.currentVersionName(this)}$notes")
+            .setPositiveButton("Jetzt installieren") { _, _ -> installUpdate() }
+            .setNegativeButton("Später", null)
+            .show()
     }
 
     private fun installUpdate() {
