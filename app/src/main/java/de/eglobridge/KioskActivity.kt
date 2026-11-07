@@ -105,7 +105,10 @@ class KioskActivity : Activity(), KioskControl.Ui {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean = false
 
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
-                if (request.isForMainFrame) showError("Dashboard nicht erreichbar – neuer Versuch in 15 s")
+                if (request.isForMainFrame) {
+                    val why = if (android.os.Build.VERSION.SDK_INT >= 23) "${error.description} (${error.errorCode})" else ""
+                    showError("Dashboard nicht erreichbar: ${request.url}\n$why\nNeuer Versuch in 15 s")
+                }
             }
 
             @SuppressLint("WebViewClientOnReceivedSslError")
