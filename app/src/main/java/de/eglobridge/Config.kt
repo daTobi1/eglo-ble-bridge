@@ -67,6 +67,11 @@ class Config(context: Context) {
         get() = p.getString("mqttPassword", "")!!
         set(v) = p.edit().putString("mqttPassword", v).apply()
 
+    /** Name of this tablet (shown in Home Assistant, used for its MQTT id). */
+    var bridgeName: String
+        get() = p.getString("bridgeName", null) ?: ("Tablet " + android.os.Build.MODEL)
+        set(v) = p.edit().putString("bridgeName", v.trim()).apply()
+
     var debugLog: Boolean
         get() = p.getBoolean("debugLog", false)
         set(v) = p.edit().putBoolean("debugLog", v).apply()

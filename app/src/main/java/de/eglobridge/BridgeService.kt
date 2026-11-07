@@ -23,6 +23,7 @@ class BridgeService : Service(), MeshListener {
         @Volatile var meshState = "gestoppt"
         /** Access for the in-app light controls while the service runs. */
         @Volatile var controller: LightController? = null
+        @Volatile var hub: MqttBridge? = null
 
         fun start(ctx: Context) {
             val i = Intent(ctx, BridgeService::class.java)
@@ -76,14 +77,13 @@ class BridgeService : Service(), MeshListener {
         mesh = m
         val lc = LightController(handler, m, cfg.devices)
         lc.musicSensitivity = cfg.musicSensitivity
-        lc.initMusicSelection(cfg.musicSelection)
-        lc.settingsListeners.add {
-            cfg.musicSensitivity = lc.musicSensitivity
-            cfg.musicSelection = lc.musicSelectionSnapshot()
-        }
         lights = lc
         controller = lc
-        mqtt = MqttBridge(handler, m, lc, version).also { it.start(cfg) }
+        val name = cfg.bridgeName
+        mqtt = MqttBridge(handler, m, lc, version, MqttBridge.slug(name), name).also {
+            hub = it
+            it.start(cfg)
+        }
         BridgeLog.listeners.add(logListener)
         m.start(cfg)
         handler.postDelayed(updateCheck, 60 * 1000L)
@@ -129,6 +129,7 @@ class BridgeService : Service(), MeshListener {
         handler.removeCallbacks(updateCheck)
         BridgeLog.i("Bridge gestoppt")
         controller = null
+        hub = null
         lights?.shutdown()
         mesh?.stop()
         lights?.markAllOffline()

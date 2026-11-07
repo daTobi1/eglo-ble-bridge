@@ -80,6 +80,17 @@
                 android:layout_height="wrap_content"
                 android:orientation="vertical" />
 
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:text="Musikquelle (welches Tablet hört zu):" />
+
+            <Spinner
+                android:id="@+id/musicSource"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+
             <Button
                 android:id="@+id/btnMusic"
                 android:layout_width="match_parent"
@@ -201,6 +212,13 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="20dp"
             android:text="2. MQTT (Home Assistant Mosquitto)" />
+
+        <EditText
+            android:id="@+id/bridgeName"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Name dieses Tablets (z. B. Tablet Wohnzimmer)"
+            android:inputType="text" />
 
         <EditText
             android:id="@+id/mqttHost"

@@ -6,9 +6,10 @@ import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.math.roundToInt
 
 /**
- * Central light logic shared by Home Assistant (MQTT) and the in-app controls:
- * keeps the last known state per lamp, translates JSON commands into mesh
- * commands, runs effects and the music mode.
+ * Local light logic of one bridge: keeps the last known state of the lamps this
+ * bridge can reach, translates JSON commands into mesh commands, runs effects and
+ * applies music frames. Coordination between several bridges (who owns which
+ * lamp, global music mode) lives in [MqttBridge].
  */
 class LightController(
     private val handler: Handler,
@@ -37,6 +38,20 @@ class LightController(
 
         fun deviceTempToKelvin(t: Int) = convert(0x7f - t.coerceIn(0, 0x7f), 0, 0x7f, MIN_K, MAX_K)
         fun kelvinToDeviceTemp(k: Int) = 0x7f - convert(k, MIN_K, MAX_K, 0, 0x7f)
+
+        /** Parse a HA JSON state message (as published by any bridge) into a LightState. */
+        fun parseState(o: JSONObject): LightState = LightState().also { st ->
+            st.known = true
+            st.available = true
+            st.on = o.optString("state") == "ON"
+            st.colorMode = o.optString("color_mode") == "rgb"
+            val br = o.optInt("brightness", 255)
+            if (st.colorMode) st.colorBrightness = convert(br, 0, 255, 0x0a, 0x64)
+            else st.whiteBrightness = convert(br, 0, 255, 1, 0x7f)
+            if (o.has("color_temp")) st.temperature = kelvinToDeviceTemp(o.optInt("color_temp"))
+            o.optJSONObject("color")?.let { st.r = it.optInt("r"); st.g = it.optInt("g"); st.b = it.optInt("b") }
+            st.effect = o.optString("effect", EFFECT_NONE)
+        }
     }
 
     class LightState {
@@ -54,88 +69,52 @@ class LightController(
         val brightness255: Int get() = if (colorMode) convert(colorBrightness, 0x0a, 0x64, 0, 255)
             else convert(whiteBrightness, 1, 0x7f, 0, 255)
         val kelvin: Int get() = deviceTempToKelvin(temperature)
-    }
 
-    /** Called whenever music mode / tempo / sensitivity changed (for MQTT state). */
-    val settingsListeners = CopyOnWriteArrayList<() -> Unit>()
-
-    /** Lamps that take part when the music mode is started for "all" (selection). */
-    private val musicSelection = HashSet<Int>()
-
-    fun initMusicSelection(sel: Set<Int>?) {
-        musicSelection.clear()
-        musicSelection.addAll(sel ?: lights.map { it.meshId })
-    }
-
-    fun musicSelected(id: Int) = synchronized(musicSelection) { musicSelection.contains(id) }
-    fun musicSelectionSnapshot(): Set<Int> = synchronized(musicSelection) { musicSelection.toSet() }
-
-    /** Select / deselect a lamp for the music mode; applies immediately while music is running. */
-    fun setMusicSelected(id: Int, selected: Boolean) {
-        handler.post {
-            val changed = synchronized(musicSelection) {
-                if (selected) musicSelection.add(id) else musicSelection.remove(id)
-            }
-            if (!changed) return@post
-            BridgeLog.i("Musikmodus: ${mesh.deviceName(id)} ${if (selected) "ausgewählt" else "abgewählt"}")
-            if (musicTargets.isNotEmpty()) {
-                if (selected && isAvailable(id)) {
-                    command(id, JSONObject().put("state", "ON").put("effect", EFFECT_MUSIC))
-                } else if (!selected && musicTargets.contains(id)) {
-                    stopMusicFor(id)
-                    // back to the previous static light
-                    command(id, JSONObject().put("effect", EFFECT_NONE))
-                }
-            }
-            settingsListeners.forEach { it() }
+        fun copy() = LightState().also {
+            it.available = available; it.on = on; it.colorMode = colorMode
+            it.whiteBrightness = whiteBrightness; it.temperature = temperature
+            it.colorBrightness = colorBrightness; it.r = r; it.g = g; it.b = b
+            it.effect = effect; it.known = known
         }
     }
 
-    /** Colour-sequence tempo 0 (slow) .. 100 (fast). */
-    @Volatile var sequenceSpeed = 50
-        private set
-
     /** Called (on the bridge thread) whenever a lamp's state changed. */
     val stateListeners = CopyOnWriteArrayList<(Int, LightState) -> Unit>()
+    /** Local reachability of a lamp changed. */
     val availabilityListeners = CopyOnWriteArrayList<(Int, Boolean) -> Unit>()
+
+    /** Set by the MQTT layer: a lamp asked for effect "Musik" while music mode is off. */
+    @Volatile var onMusicRequested: (() -> Unit)? = null
+    /** Set by the MQTT layer: frames from this tablet's microphone. */
+    @Volatile var onMicFrame: ((r: Int, g: Int, b: Int, bright: Int, beat: Boolean) -> Unit)? = null
 
     private val states = HashMap<Int, LightState>()
     private val lastPreset = HashMap<Int, Int>()
 
     // music mode
     private val musicTargets = HashSet<Int>()
-    private var music: MusicMode? = null
+    private var mic: MusicMode? = null
     @Volatile var musicSensitivity = 1.0f
-        set(v) {
-            field = v.coerceIn(0.5f, 2.0f)
-            music?.sensitivity = field
-            settingsListeners.forEach { it() }
-        }
+        set(v) { field = v.coerceIn(0.5f, 2.0f); mic?.sensitivity = field }
+    @Volatile var musicGlobalOn = false
+        private set
     private var lastMusicBrightness = -1
-    private var lastMusicColorAt = 0L
+    private var lastMicFrameAt = 0L
 
     val lights get() = devices.filter { it.isLight }
     fun device(id: Int) = devices.firstOrNull { it.meshId == id }
 
-    /** Thread-safe snapshot for the UI. */
-    fun snapshot(): Map<Int, LightState> = synchronized(states) {
-        states.mapValues { (_, s) ->
-            LightState().also {
-                it.available = s.available; it.on = s.on; it.colorMode = s.colorMode
-                it.whiteBrightness = s.whiteBrightness; it.temperature = s.temperature
-                it.colorBrightness = s.colorBrightness; it.r = s.r; it.g = s.g; it.b = s.b
-                it.effect = s.effect; it.known = s.known
-            }
-        }
-    }
+    /** Thread-safe snapshot of the local states. */
+    fun snapshot(): Map<Int, LightState> = synchronized(states) { states.mapValues { it.value.copy() } }
 
     fun isAvailable(id: Int) = synchronized(states) { states[id]?.available == true }
-    val musicActive get() = musicTargets.isNotEmpty()
+    fun localState(id: Int): LightState? = synchronized(states) { states[id]?.copy() }
+    val micRunning get() = mic != null
 
     private fun st(id: Int) = synchronized(states) { states.getOrPut(id) { LightState() } }
 
     private fun notifyState(id: Int) {
-        val s = st(id)
+        val s = st(id).copy()
         stateListeners.forEach { it(id, s) }
     }
 
@@ -167,6 +146,7 @@ class LightController(
         val st = st(id)
         if (st.available == available) return
         st.available = available
+        if (!available) musicTargets.remove(id)
         availabilityListeners.forEach { it(id, available) }
         notifyState(id)
     }
@@ -178,7 +158,7 @@ class LightController(
     // ------------------------------------------------------------------ commands
 
     /**
-     * Apply a Home Assistant style JSON command:
+     * Apply a Home Assistant style JSON command on the local mesh:
      * {"state":"ON","brightness":0..255,"color":{"r","g","b"},"color_temp":kelvin,"effect":"…"}
      */
     fun command(id: Int, root: JSONObject) {
@@ -190,11 +170,12 @@ class LightController(
         val st = st(id)
         var stateSet = false
 
-        // any explicit colour / temperature / effect change ends music mode for this lamp
+        // any explicit colour / temperature / effect change ends music for this lamp
         val effect = root.optString("effect", "")
         if (musicTargets.contains(id) && (effect.isNotEmpty() && effect != EFFECT_MUSIC ||
                 root.has("color") || root.has("color_temp") || root.optString("state") == "OFF")) {
-            stopMusicFor(id)
+            musicTargets.remove(id)
+            if (st.effect == EFFECT_MUSIC) st.effect = EFFECT_NONE
         }
 
         root.optJSONObject("color")?.let { c ->
@@ -253,8 +234,9 @@ class LightController(
                 st.effect = effect
             }
             effect == EFFECT_MUSIC -> {
-                startMusicFor(id)
+                musicTargets.add(id)
                 st.effect = effect; st.colorMode = true
+                if (!musicGlobalOn) onMusicRequested?.invoke()
             }
             else -> {
                 // "Kein Effekt": go back to the last static colour / white
@@ -265,108 +247,103 @@ class LightController(
         }
     }
 
-    /** Speed of the colour sequences: [colorMs] how long a colour stays, [fadeMs] cross-fade. */
-    fun setSequenceTiming(id: Int, colorMs: Int, fadeMs: Int) {
-        mesh.setSequenceColorDuration(id, colorMs)
-        mesh.setSequenceFadeDuration(id, fadeMs)
-    }
-
-    /** Tempo 0 (slow, 5 s per colour) .. 100 (fast, 0.2 s per colour) for all lamps. */
-    fun setSequenceSpeed(speed: Int) {
-        sequenceSpeed = speed.coerceIn(0, 100)
-        val colorMs = (5000 - sequenceSpeed * 48).coerceAtLeast(200)
+    /** Speed of the colour sequences for the given lamps: tempo 0 (slow) .. 100 (fast). */
+    fun applySequenceSpeed(ids: List<Int>, speed: Int) {
+        val colorMs = (5000 - speed.coerceIn(0, 100) * 48).coerceAtLeast(200)
         val fadeMs = colorMs / 2
-        lights.forEach { setSequenceTiming(it.meshId, colorMs, fadeMs) }
-        BridgeLog.i("Effekt-Tempo $sequenceSpeed (${colorMs} ms pro Farbe)")
-        settingsListeners.forEach { it() }
+        ids.forEach {
+            mesh.setSequenceColorDuration(it, colorMs)
+            mesh.setSequenceFadeDuration(it, fadeMs)
+        }
     }
 
-    /** Music mode on all selected and reachable lamps. */
-    fun startMusicAll(): Boolean {
-        val targets = lights.filter { musicSelected(it.meshId) && isAvailable(it.meshId) }
-        if (targets.isEmpty()) {
-            BridgeLog.w("Musikmodus: keine ausgewählte Lampe erreichbar")
-            return false
+    // ------------------------------------------------------------------ music (distributed)
+
+    /**
+     * Global music mode changed. [targets] are the lamps this bridge owns and that are
+     * selected for the music mode.
+     */
+    fun setMusicMode(on: Boolean, targets: List<Int>) {
+        handler.post {
+            musicGlobalOn = on
+            if (on) {
+                for (id in targets) {
+                    if (musicTargets.add(id)) {
+                        st(id).apply { effect = EFFECT_MUSIC; colorMode = true; this.on = true }
+                        notifyState(id)
+                    }
+                }
+                lastMusicBrightness = -1
+            } else {
+                val old = musicTargets.toList()
+                musicTargets.clear()
+                for (id in old) {
+                    val st = st(id)
+                    st.effect = EFFECT_NONE
+                    // leave the lamp on its last music colour; HA shows it as static colour
+                    notifyState(id)
+                }
+            }
         }
-        targets.forEach { command(it.meshId, JSONObject().put("state", "ON").put("effect", EFFECT_MUSIC)) }
+    }
+
+    /** Add / remove a single lamp while music mode is running. */
+    fun setMusicTarget(id: Int, on: Boolean) {
+        handler.post {
+            if (on) {
+                if (musicGlobalOn && musicTargets.add(id)) {
+                    st(id).apply { effect = EFFECT_MUSIC; colorMode = true; this.on = true }
+                    notifyState(id)
+                }
+            } else if (musicTargets.remove(id)) {
+                st(id).effect = EFFECT_NONE
+                notifyState(id)
+            }
+        }
+    }
+
+    fun startMic(): Boolean {
+        if (mic != null) return true
+        val m = MusicMode { r, g, b, level, beat ->
+            val now = System.currentTimeMillis()
+            // about 4 colour updates per second (BLE mesh can't do much more), immediately on beats
+            if (beat || now - lastMicFrameAt >= 240) {
+                lastMicFrameAt = now
+                val bright = (0x0a + level * (0x64 - 0x0a)).toInt().coerceIn(0x0a, 0x64)
+                onMicFrame?.invoke(r, g, b, bright, beat)
+            }
+        }
+        m.sensitivity = musicSensitivity
+        if (!m.start()) return false
+        mic = m
         return true
     }
 
-    // ------------------------------------------------------------------ music
-
-    fun startMusicFor(id: Int) {
-        handler.post {
-            musicTargets.add(id)
-            st(id).apply { effect = EFFECT_MUSIC; colorMode = true; on = true }
-            if (music == null) {
-                val m = MusicMode { r, g, b, level, beat -> onMusicFrame(r, g, b, level, beat) }
-                m.sensitivity = musicSensitivity
-                if (!m.start()) {
-                    musicTargets.clear()
-                    st(id).effect = EFFECT_NONE
-                    notifyState(id)
-                    return@post
-                }
-                music = m
-                lastMusicBrightness = -1
-                settingsListeners.forEach { it() }
-            }
-            notifyState(id)
-        }
+    fun stopMic() {
+        mic?.stop()
+        mic = null
     }
 
-    fun stopMusicFor(id: Int) {
-        handler.post {
-            if (!musicTargets.remove(id)) return@post
-            st(id).effect = EFFECT_NONE
-            if (musicTargets.isEmpty()) {
-                music?.stop()
-                music = null
-                settingsListeners.forEach { it() }
-            }
-            notifyState(id)
-        }
-    }
-
-    fun stopAllMusic() {
-        handler.post {
-            val ids = musicTargets.toList()
-            musicTargets.clear()
-            music?.stop()
-            music = null
-            ids.forEach { st(it).effect = EFFECT_NONE; notifyState(it) }
-            settingsListeners.forEach { it() }
-        }
-    }
-
-    /** Called from the audio thread. */
-    private fun onMusicFrame(r: Int, g: Int, b: Int, level: Float, beat: Boolean) {
-        val now = System.currentTimeMillis()
-        // about 4 colour updates per second (BLE mesh can't do much more), immediately on beats
-        if (!beat && now - lastMusicColorAt < 240) return
-        lastMusicColorAt = now
+    /** Apply one music frame (from this or another tablet) to the local music lamps. */
+    fun applyMusicFrame(r: Int, g: Int, b: Int, bright: Int, beat: Boolean) {
         handler.post {
             if (musicTargets.isEmpty()) return@post
-            val targets = musicTargets.toList()
+            val targets = musicTargets.filter { isAvailable(it) }
+            if (targets.isEmpty()) return@post
             val all = lights.all { musicTargets.contains(it.meshId) || !isAvailable(it.meshId) }
             val dests = if (all && targets.size > 1) listOf(MeshManager.BROADCAST) else targets
-            val bright = (0x0a + level * (0x64 - 0x0a)).toInt().coerceIn(0x0a, 0x64)
+            val sendBright = kotlin.math.abs(bright - lastMusicBrightness) >= 8 || beat
             for (d in dests) {
                 mesh.setColor(d, r, g, b, coalesce = true)
-                if (kotlin.math.abs(bright - lastMusicBrightness) >= 8 || beat) {
-                    mesh.setColorBrightness(d, bright, coalesce = true)
-                }
+                if (sendBright) mesh.setColorBrightness(d, bright, coalesce = true)
             }
-            if (kotlin.math.abs(bright - lastMusicBrightness) >= 8 || beat) lastMusicBrightness = bright
-            for (t in targets) {
-                st(t).apply { this.r = r; this.g = g; this.b = b; colorBrightness = bright }
-            }
+            if (sendBright) lastMusicBrightness = bright
+            for (t in targets) st(t).apply { this.r = r; this.g = g; this.b = b; colorBrightness = bright }
         }
     }
 
     fun shutdown() {
-        music?.stop()
-        music = null
+        stopMic()
         musicTargets.clear()
     }
 }

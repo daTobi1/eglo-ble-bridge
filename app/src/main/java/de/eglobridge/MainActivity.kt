@@ -41,6 +41,9 @@ class MainActivity : Activity() {
     private lateinit var btnMusic: Button
     private val lampPanels = LinkedHashMap<Int, LampPanel>()
     private val musicChecks = LinkedHashMap<Int, CheckBox>()
+    private lateinit var musicSource: android.widget.Spinner
+    private lateinit var bridgeName: EditText
+    private var sourceNames: List<String> = emptyList()
     private var updateBusy = false
     private var updateMsg = ""
 
@@ -99,24 +102,33 @@ class MainActivity : Activity() {
         val sens = findViewById<SeekBar>(R.id.musicSensitivity)
         sens.progress = ((cfg.musicSensitivity - 0.5f) * 100).toInt().coerceIn(0, 150)
         sens.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(sb: SeekBar, p: Int, fromUser: Boolean) {
-                if (!fromUser) return
-                val v = 0.5f + p / 100f
-                cfg.musicSensitivity = v
-                BridgeService.controller?.musicSensitivity = v
-            }
+            override fun onProgressChanged(sb: SeekBar, p: Int, fromUser: Boolean) {}
             override fun onStartTrackingTouch(sb: SeekBar) {}
-            override fun onStopTrackingTouch(sb: SeekBar) {}
+            override fun onStopTrackingTouch(sb: SeekBar) {
+                val v = 0.5f + sb.progress / 100f
+                cfg.musicSensitivity = v
+                BridgeService.hub?.setSensitivity((v * 100).toInt())
+            }
         })
         findViewById<SeekBar>(R.id.sequenceSpeed).setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar, p: Int, fromUser: Boolean) {}
             override fun onStartTrackingTouch(sb: SeekBar) {}
             override fun onStopTrackingTouch(sb: SeekBar) {
                 // 0 = slow (5 s per colour), 100 = fast (0.2 s per colour)
-                val c = BridgeService.controller ?: return
-                c.setSequenceSpeed(sb.progress)
+                BridgeService.hub?.setSpeed(sb.progress)
             }
         })
+        musicSource = findViewById(R.id.musicSource)
+        musicSource.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: android.view.View?, pos: Int, id: Long) {
+                val name = sourceNames.getOrNull(pos) ?: return
+                val hub = BridgeService.hub ?: return
+                if (name != hub.musicSourceName()) hub.setMusicSource(name)
+            }
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+        }
+        bridgeName = findViewById(R.id.bridgeName)
+        bridgeName.setText(cfg.bridgeName)
         val debug = findViewById<CheckBox>(R.id.debugLog)
         debug.isChecked = cfg.debugLog
         debug.setOnCheckedChangeListener { _, checked ->
@@ -165,61 +177,58 @@ class MainActivity : Activity() {
         val box = findViewById<LinearLayout>(R.id.musicLamps)
         box.removeAllViews()
         musicChecks.clear()
-        val saved = cfg.musicSelection
         for (d in lights.filter { it.hasColor }) {
             val cb = CheckBox(this)
             cb.text = d.name.trim()
-            cb.isChecked = saved?.contains(d.meshId) ?: true
-            cb.setOnCheckedChangeListener { _, checked ->
-                val c = BridgeService.controller
-                if (c != null) c.setMusicSelected(d.meshId, checked)
-                else {
-                    val sel = (cfg.musicSelection ?: lights.map { it.meshId }.toSet()).toMutableSet()
-                    if (checked) sel.add(d.meshId) else sel.remove(d.meshId)
-                    cfg.musicSelection = sel
-                }
-            }
+            cb.isChecked = true
+            cb.setOnCheckedChangeListener(musicCheckListener(d.meshId))
             musicChecks[d.meshId] = cb
             box.addView(cb)
         }
     }
 
+    private fun musicCheckListener(id: Int) = android.widget.CompoundButton.OnCheckedChangeListener { _, checked ->
+        BridgeService.hub?.setMusicSelected(id, checked)
+    }
+
     private fun refreshLamps() {
-        val c = BridgeService.controller
-        val snap = c?.snapshot() ?: emptyMap()
-        for ((id, panel) in lampPanels) panel.update(snap[id])
-        val musicOn = c?.musicActive == true
-        if (c != null) {
+        val hub = BridgeService.hub
+        for ((id, panel) in lampPanels) panel.update(hub?.uiState(id), hub?.ownerName(id))
+        if (hub != null) {
             for ((id, cb) in musicChecks) {
-                val sel = c.musicSelected(id)
+                val sel = hub.musicSelected(id)
                 if (cb.isChecked != sel) {
-                    // reflect changes made in Home Assistant without re-triggering the listener
+                    // reflect changes made in Home Assistant / on another tablet without re-triggering
                     cb.setOnCheckedChangeListener(null)
                     cb.isChecked = sel
-                    cb.setOnCheckedChangeListener { _, checked -> BridgeService.controller?.setMusicSelected(id, checked) }
+                    cb.setOnCheckedChangeListener(musicCheckListener(id))
                 }
             }
+            val names = hub.bridgeNames()
+            if (names != sourceNames) {
+                sourceNames = names
+                musicSource.adapter = android.widget.ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, names)
+            }
+            val idx = names.indexOf(hub.musicSourceName())
+            if (idx >= 0 && musicSource.selectedItemPosition != idx) musicSource.setSelection(idx, false)
         }
-        val label = if (musicOn) "Musikmodus stoppen" else "Musikmodus starten"
+        val label = if (hub?.musicActive == true) "Musikmodus stoppen" else "Musikmodus starten"
         if (btnMusic.text.toString() != label) btnMusic.text = label
     }
 
     private fun toggleMusic() {
-        val c = BridgeService.controller
-        if (c == null) {
+        val hub = BridgeService.hub
+        if (hub == null) {
             Toast.makeText(this, "Bitte zuerst die Bridge starten", Toast.LENGTH_LONG).show(); return
         }
-        if (c.musicActive) { c.stopAllMusic(); return }
+        if (hub.musicActive) { hub.setMusicGlobal(false); return }
         if (Build.VERSION.SDK_INT >= 23 &&
             checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED
         ) {
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 2)
             return
         }
-        if (c.lights.none { c.musicSelected(it.meshId) && c.isAvailable(it.meshId) }) {
-            Toast.makeText(this, "Keine ausgewählte Lampe erreichbar", Toast.LENGTH_LONG).show(); return
-        }
-        c.startMusicAll()
+        hub.setMusicGlobal(true)
     }
 
     /** Only touch the view when the text really changed, so the ScrollView does not jump. */
@@ -306,6 +315,8 @@ class MainActivity : Activity() {
         cfg.mqttPort = mqttPort.text.toString().toIntOrNull() ?: 1883
         cfg.mqttUser = mqttUser.text.toString().trim()
         cfg.mqttPassword = mqttPassword.text.toString()
+        val n = bridgeName.text.toString().trim()
+        if (n.isNotEmpty()) cfg.bridgeName = n
     }
 
     private fun importFromCloud() {

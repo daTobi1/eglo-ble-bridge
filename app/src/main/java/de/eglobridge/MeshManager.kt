@@ -89,6 +89,7 @@ class MeshManager(
     private var scanPurpose = ""
     private val scanRssi = HashMap<String, Int>()
     private val scanSeenAt = HashMap<String, Long>()
+    private val lastRssi = HashMap<String, Int>()
 
     private var candidates = ArrayDeque<String>()
     private val attemptsForMac = HashMap<String, Int>()
@@ -143,6 +144,27 @@ class MeshManager(
             reconnectDelay = 3000L
             scheduleReconnect(1500)
         }
+    }
+
+    /**
+     * How well this bridge reaches a lamp (used to pick the bridge that controls it):
+     * 0 = not reachable, 100..199 = through the mesh, 200..299 = direct connection.
+     * Signal strength is bucketed to 10 dB so ownership does not flap.
+     */
+    fun linkScore(meshId: Int): Int {
+        val now = SystemClock.elapsedRealtime()
+        val d = devices.firstOrNull { it.meshId == meshId } ?: return 0
+        fun rssiPart(mac: String): Int {
+            val r = (lastRssi[mac] ?: -90).coerceIn(-99, -1)
+            return 99 + (r / 10) * 10   // -45 -> 59, -85 -> 19
+        }
+        val direct = connections[d.mac]?.takeIf { it.isPaired }
+        if (direct != null) return 200 + rssiPart(d.mac)
+        val via = heardVia[meshId]
+        if (via != null && connections[via]?.isPaired == true && now - (lastSeen[meshId] ?: 0L) < 2 * 60 * 1000L) {
+            return 100 + rssiPart(via)
+        }
+        return 0
     }
 
     fun deviceName(meshId: Int) = devices.firstOrNull { it.meshId == meshId }?.name?.trim() ?: "#$meshId"
@@ -224,6 +246,7 @@ class MeshManager(
                     BridgeLog.i("Gefunden: $name $mac RSSI $rssi")
                 }
                 scanRssi[mac] = rssi
+                lastRssi[mac] = rssi
                 scanSeenAt[mac] = SystemClock.elapsedRealtime()
             }
         }

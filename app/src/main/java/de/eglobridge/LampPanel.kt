@@ -146,17 +146,18 @@ class LampPanel(context: Context, private val device: MeshDevice) : LinearLayout
     }
 
     private fun send(json: JSONObject) {
-        BridgeService.controller?.command(device.meshId, json)
+        BridgeService.hub?.sendCommand(device.meshId, json)
     }
 
     /** Refresh from the controller state unless the user just touched a control. */
-    fun update(st: LightController.LightState?) {
+    fun update(st: LightController.LightState?, owner: String?) {
         val available = st?.available == true
+        val via = if (owner != null) " · über $owner" else ""
         info.text = when {
-            BridgeService.controller == null -> "Bridge nicht gestartet"
+            BridgeService.hub == null -> "Bridge nicht gestartet"
             !available -> "nicht erreichbar"
-            st!!.effect != LightController.EFFECT_NONE -> "erreichbar · ${st.effect}"
-            else -> "erreichbar"
+            st!!.effect != LightController.EFFECT_NONE -> "erreichbar$via · ${st.effect}"
+            else -> "erreichbar$via"
         }
         alpha = if (available) 1f else 0.55f
         if (st == null || SystemClock.elapsedRealtime() - lastUserAction < 2500) return
