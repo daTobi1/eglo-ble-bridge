@@ -3,6 +3,7 @@ name: Build APK
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -30,6 +31,7 @@ jobs:
         run: gradle --no-daemon assembleDebug
 
       - name: Rename APK + version info
+        if: github.event_name != 'pull_request'
         run: |
           cp app/build/outputs/apk/debug/app-debug.apk eglo-ble-bridge.apk
           jq -n --argjson code "${{ github.run_number }}" --arg name "0.1.${{ github.run_number }}" \
@@ -38,11 +40,13 @@ jobs:
           cat version.json
 
       - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
         with:
           name: eglo-ble-bridge-apk
           path: eglo-ble-bridge.apk
 
       - name: Publish "latest" release
+        if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

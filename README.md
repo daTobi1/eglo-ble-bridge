@@ -7,6 +7,8 @@ Android-App, die ein altes Tablet zur **Brücke zwischen EGLO-Connect/AwoX-Bluet
 - läuft als Hintergrunddienst, startet nach Neustart automatisch
 - Diagnose-Entitäten in HA: Status, Log, Button „Neu verbinden“
 
+> **Raspberry Pi / Linux:** Dieselbe Bridge gibt es auch als Linux-Dienst, siehe [`pi/`](pi/README.md). Pi und Tablets arbeiten zusammen; jede Lampe wird von der Bridge mit dem besten Empfang gesteuert.
+
 ## Installation
 
 1. Auf dem Tablet die APK aus dem Release **[latest](../../releases/tag/latest)** herunterladen und installieren.

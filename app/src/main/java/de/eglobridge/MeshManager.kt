@@ -108,6 +108,10 @@ class MeshManager(
     // permanent low-power scan that notices lamps as soon as they advertise again (e.g. after a power cut)
     private var watching = false
     private val watchReactedAt = HashMap<String, Long>()
+    /** True from the start of a scan until its result has been handled: the watch must not race it. */
+    private var scanFollowup = false
+    /** Lamps that refused the mesh credentials: the watch does not hammer them every 15 s. */
+    private val rejected = HashSet<String>()
 
     // ---------------------------------------------------------------- public API
 
@@ -148,6 +152,7 @@ class MeshManager(
             connecting?.close("Neuverbindung")
             connections.values.toList().forEach { it.close("Neuverbindung") }
             attemptsForMac.clear()
+            rejected.clear()
             reconnectDelay = 3000L
             scheduleReconnect(1500)
         }
@@ -273,6 +278,7 @@ class MeshManager(
         stopWatch()
         scanRssi.clear()
         scanning = true
+        scanFollowup = true
         scanPurpose = purpose
         publishState()
         try {
@@ -281,6 +287,7 @@ class MeshManager(
         } catch (t: Throwable) {
             BridgeLog.e("Scan konnte nicht gestartet werden", t)
             scanning = false
+            scanFollowup = false
             then(); return
         }
         handler.postDelayed({
@@ -288,8 +295,11 @@ class MeshManager(
             scanning = false
             publishState()
             ensureWatch()
-            // give the controller a moment after stopping the scan
-            handler.postDelayed({ if (running) then() }, 500)
+            // give the controller a moment after stopping the scan; until the result is handled
+            // the watch scan must not start its own (parallel) connection attempt
+            handler.postDelayed({
+                try { if (running) then() } finally { scanFollowup = false }
+            }, 500)
         }, SCAN_MS)
     }
 
@@ -385,6 +395,7 @@ class MeshManager(
 
     override fun onPaired(c: MeshConnection) {
         if (connecting == c) connecting = null
+        rejected.remove(c.mac)
         handler.postDelayed({ ensureWatch() }, 3000)
         reconnectDelay = 5000L
         attemptsForMac.remove(c.mac)
@@ -412,6 +423,7 @@ class MeshManager(
         heardVia.entries.removeAll { it.value == c.mac }
         if (!running) return
 
+        if (reason.contains("abgelehnt")) rejected.add(c.mac)
         if (wasPaired) {
             BridgeLog.w("Verbindung zu ${nameForMac(c.mac)} getrennt ($reason)")
         } else {
@@ -546,7 +558,7 @@ class MeshManager(
         lastRssi[mac] = rssi
         scanSeenAt[mac] = SystemClock.elapsedRealtime()
         val d = lights.firstOrNull { it.mac == mac } ?: return
-        if (connections.containsKey(mac)) return
+        if (connections.containsKey(mac) || scanFollowup || rejected.contains(mac)) return
         val now = SystemClock.elapsedRealtime()
         val missing = !online.contains(d.meshId) || now - (lastSeen[d.meshId] ?: 0L) > MISSING_AFTER_MS
         if (!missing) return

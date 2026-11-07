@@ -142,7 +142,12 @@ class LightController(
 
     fun isAvailable(id: Int) = synchronized(states) { states[id]?.available == true }
     fun localState(id: Int): LightState? = synchronized(states) { states[id]?.copy() }
-    val micRunning get() = mic != null
+    /** False again when the audio thread died (error / mic busy), so the mic can be restarted. */
+    val micRunning: Boolean
+        get() {
+            if (mic?.isRunning == false) mic = null
+            return mic != null
+        }
 
     private fun st(id: Int) = synchronized(states) { states.getOrPut(id) { LightState() } }
 

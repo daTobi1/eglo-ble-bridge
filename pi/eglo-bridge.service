@@ -1,0 +1,24 @@
+[Unit]
+Description=EGLO BLE Bridge (AwoX mesh <-> MQTT)
+Wants=network-online.target bluetooth.service
+After=network-online.target bluetooth.service
+
+[Service]
+Type=simple
+User=eglo-bridge
+Group=eglo-bridge
+SupplementaryGroups=bluetooth audio
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/eglo-bridge/venv/bin/eglo-bridge run
+Restart=on-failure
+RestartSec=20
+# hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+# config is rewritten by "Lampen neu importieren"
+ReadWritePaths=/etc/eglo-bridge
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

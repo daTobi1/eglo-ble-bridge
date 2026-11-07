@@ -66,7 +66,8 @@ class MqttBridge(
         }
     }
 
-    private class BridgeInfo(var name: String, var online: Boolean)
+    /** [mic] = bridge can listen; the Raspberry Pi port announces "mic": false without a microphone. */
+    private class BridgeInfo(var name: String, var online: Boolean, var mic: Boolean = true)
 
     // per-bridge topics
     private val bTopic = "$BASE/bridge/$bridgeId"
@@ -242,7 +243,8 @@ class MqttBridge(
             BridgeLog.e("MQTT-Subscribe fehlgeschlagen", t)
         }
         publish(avail, "online", retain = true, qos = 1)
-        publish(info, JSONObject().put("name", bridgeName).put("version", version).toString(), retain = true, qos = 1)
+        publish(info, JSONObject().put("name", bridgeName).put("version", version).put("mic", true)
+            .put("platform", "android").toString(), retain = true, qos = 1)
         publish(stateText, bridgeState, retain = true)
         publish(debugTopic, if (BridgeLog.verbose) "ON" else "OFF", retain = true)
         micState = ""
@@ -563,7 +565,7 @@ class MqttBridge(
 
     /** Select entity "Musikquelle" listing all known tablets. Re-published when the list changes. */
     private fun publishSourceSelect(force: Boolean = false) {
-        val names = bridges.values.map { it.name }.distinct().sorted()
+        val names = bridges.values.filter { it.mic }.map { it.name }.distinct().sorted()
         val key = names.joinToString("|")
         if (!force && key == lastSourceOptions) return
         lastSourceOptions = key
@@ -776,8 +778,10 @@ class MqttBridge(
     /** The tablet whose microphone is used: the chosen one if online, else the first online tablet. */
     fun effectiveSource(): String {
         val chosen = musicSourceId
-        if (chosen != null && (chosen == bridgeId || bridges[chosen]?.online == true)) return chosen
-        return bridges.filter { it.value.online || it.key == bridgeId }.keys.minOrNull() ?: bridgeId
+        // a chosen bridge that cannot listen (e.g. stale retained choice of a Pi without microphone) is skipped
+        if (chosen != null && bridges[chosen]?.mic != false &&
+            (chosen == bridgeId || bridges[chosen]?.online == true)) return chosen
+        return bridges.filter { (it.value.online || it.key == bridgeId) && it.value.mic }.keys.minOrNull() ?: bridgeId
     }
 
     private fun requestMusic(on: Boolean) {
@@ -967,7 +971,11 @@ class MqttBridge(
                     }
                     if (bid != bridgeId) b.online = online
                 }
-                "info" -> try { b.name = JSONObject(v).optString("name", bid) } catch (_: Exception) { }
+                "info" -> try {
+                    val o = JSONObject(v)
+                    b.name = o.optString("name", bid)
+                    if (bid != bridgeId) b.mic = o.optBoolean("mic", true)
+                } catch (_: Exception) { }
             }
             recompute()
             return
@@ -1066,7 +1074,7 @@ class MqttBridge(
     }
 
     fun musicSourceName(): String = bridges[effectiveSource()]?.name ?: effectiveSource()
-    fun bridgeNames(): List<String> = bridges.values.map { it.name }.distinct().sorted()
+    fun bridgeNames(): List<String> = bridges.values.filter { it.mic }.map { it.name }.distinct().sorted()
     fun setMusicSource(name: String) {
         if (connected) publish(SOURCE_SET, name)
     }

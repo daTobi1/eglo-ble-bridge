@@ -1,0 +1,27 @@
+name: Pi bridge (Python)
+
+on:
+  push:
+    branches: [main]
+    paths: ["pi/**", ".github/workflows/pi.yml"]
+  pull_request:
+    paths: ["pi/**", ".github/workflows/pi.yml"]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.11", "3.13"]   # Raspberry Pi OS Bookworm / Trixie
+    defaults:
+      run:
+        working-directory: pi
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e ".[test]" amqtt
+      - run: pytest -q
+      - run: bash -n install.sh
