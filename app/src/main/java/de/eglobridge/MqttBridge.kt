@@ -115,6 +115,8 @@ class MqttBridge(
     private var lastSourceOptions = ""
     private val fireKnown = HashSet<String>()
     private val lampKnown = HashSet<String>()
+    /** Favourites per lamp: "<id>/1" -> HA light command JSON (shared, retained). */
+    private val favorites = ConcurrentHashMap<String, JSONObject>()
 
     val connected: Boolean get() = client?.isConnected == true
 
@@ -327,6 +329,27 @@ class MqttBridge(
                     .toString(), retain = true, qos = 1)
             }
             publish("homeassistant/light/eglo_bridge_$id/config", cfg.toString(), retain = true, qos = 1)
+            if (d.hasColor || d.hasTemperature) {
+                for (n in 1..2) {
+                    publish("homeassistant/button/eglo_bridge_${id}_fav${n}/config", JSONObject()
+                        .put("name", "Favorit $n")
+                        .put("unique_id", "eglo_bridge_${id}_fav$n")
+                        .put("command_topic", "$BASE/light/$id/fav/set")
+                        .put("payload_press", "recall$n")
+                        .put("icon", if (n == 1) "mdi:numeric-1-circle" else "mdi:numeric-2-circle")
+                        .put("device", JSONObject().put("identifiers", JSONArray().put("eglo_bridge_dev_$id")))
+                        .toString(), retain = true, qos = 1)
+                    publish("homeassistant/button/eglo_bridge_${id}_fav${n}_save/config", JSONObject()
+                        .put("name", "Favorit $n speichern (aktuelle Einstellung)")
+                        .put("unique_id", "eglo_bridge_${id}_fav${n}_save")
+                        .put("command_topic", "$BASE/light/$id/fav/set")
+                        .put("payload_press", "save$n")
+                        .put("icon", "mdi:content-save")
+                        .put("entity_category", "config")
+                        .put("device", JSONObject().put("identifiers", JSONArray().put("eglo_bridge_dev_$id")))
+                        .toString(), retain = true, qos = 1)
+                }
+            }
             if (d.hasColor) {
                 for (ls in LAMP_SETTINGS) {
                     publish("homeassistant/number/eglo_bridge_${id}_${ls[0]}/config", JSONObject()
@@ -664,6 +687,51 @@ class MqttBridge(
 
     private fun selected(id: Int) = selection[id] ?: true
 
+    // ================================================================= favourites
+
+    private fun currentAsCommand(id: Int): JSONObject? {
+        val st = uiState(id) ?: return null
+        if (!st.known) return null
+        val d = devices.firstOrNull { it.meshId == id } ?: return null
+        val o = JSONObject().put("state", "ON").put("brightness", st.brightness255.coerceAtLeast(1))
+        if (st.colorMode && d.hasColor) {
+            o.put("color", JSONObject().put("r", st.r).put("g", st.g).put("b", st.b))
+        } else if (d.hasTemperature) {
+            o.put("color_temp", st.kelvin)
+        }
+        // keep a running effect (not music: that depends on the music mode)
+        if (st.effect != LightController.EFFECT_NONE && st.effect != LightController.EFFECT_MUSIC) {
+            o.put("effect", st.effect)
+        }
+        return o
+    }
+
+    private fun saveFavorite(id: Int, n: Int) {
+        if (n !in 1..2) return
+        val cmd = currentAsCommand(id) ?: run { BridgeLog.w("Favorit $n: Zustand der Lampe unbekannt"); return }
+        favorites["$id/$n"] = cmd
+        publish("$BASE/light/$id/fav$n", cmd.toString(), retain = true, qos = 1)
+        BridgeLog.i("Favorit $n für ${mesh.deviceName(id)} gespeichert: $cmd")
+    }
+
+    private fun recallFavorite(id: Int, n: Int) {
+        val cmd = favorites["$id/$n"]
+        if (cmd == null) {
+            BridgeLog.w("Favorit $n für ${mesh.deviceName(id)} ist noch nicht belegt")
+            return
+        }
+        lights.command(id, JSONObject(cmd.toString()))
+    }
+
+    /** Favourite as stored (for the app buttons), or null. */
+    fun favorite(id: Int, n: Int): JSONObject? = favorites["$id/$n"]
+
+    fun pressFavorite(id: Int, n: Int, save: Boolean) {
+        val payload = (if (save) "save" else "recall") + n
+        if (connected) publish("$BASE/light/$id/fav/set", payload)
+        else handler.post { if (save) saveFavorite(id, n) else recallFavorite(id, n) }
+    }
+
     /** Write a per-lamp setting for every colour lamp (used by the global sliders). */
     private fun setAllLamps(key: String, value: Int) {
         for (d in devices.filter { it.isLight && it.hasColor }) {
@@ -914,6 +982,18 @@ class MqttBridge(
             parts.size == 5 && parts[3] == "link" -> {
                 links.getOrPut(id) { ConcurrentHashMap() }[parts[4]] = v.toIntOrNull() ?: 0
                 if (parts[4] != bridgeId) recompute()
+            }
+            parts.size == 5 && parts[3] == "fav" && parts[4] == "set" -> {
+                val owner = ownerOf(id)
+                if (owner != bridgeId && !(owner == null && lights.isAvailable(id))) return
+                when {
+                    v.startsWith("recall") -> recallFavorite(id, v.removePrefix("recall").toIntOrNull() ?: return)
+                    v.startsWith("save") -> saveFavorite(id, v.removePrefix("save").toIntOrNull() ?: return)
+                }
+            }
+            parts.size == 4 && (parts[3] == "fav1" || parts[3] == "fav2") -> {
+                if (v.isEmpty()) favorites.remove("$id/${parts[3].last()}")
+                else try { favorites["$id/${parts[3].last()}"] = JSONObject(v) } catch (_: Exception) { }
             }
             parts.size == 5 && parts[3] in LAMP_SETTING_KEYS && parts[4] == "set" -> {
                 val n = v.toFloatOrNull()?.toInt()?.coerceIn(0, 100) ?: return

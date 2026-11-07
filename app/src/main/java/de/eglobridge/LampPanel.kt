@@ -30,6 +30,7 @@ class LampPanel(context: Context, private val device: MeshDevice) : LinearLayout
     private var lastUserAction = 0L
     private var updating = false
     private var shownEffectIdx = 0
+    private val favButtons = arrayOfNulls<Button>(2)
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
@@ -53,6 +54,30 @@ class LampPanel(context: Context, private val device: MeshDevice) : LinearLayout
         header.addView(names, LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f))
         header.addView(power)
         addView(header)
+
+        // favourites: tap = recall, long press = save current setting
+        val favRow = LinearLayout(context).apply { orientation = HORIZONTAL }
+        for (n in 1..2) {
+            val b = Button(context)
+            b.text = "★ Favorit $n"
+            b.setOnClickListener {
+                touch(); BridgeService.hub?.pressFavorite(device.meshId, n, save = false)
+            }
+            b.setOnLongClickListener {
+                BridgeService.hub?.pressFavorite(device.meshId, n, save = true)
+                android.widget.Toast.makeText(context, "Favorit $n gespeichert", android.widget.Toast.LENGTH_SHORT).show()
+                true
+            }
+            favButtons[n - 1] = b
+            val flp = LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f)
+            flp.setMargins(dp(2), dp(4), dp(2), 0)
+            favRow.addView(b, flp)
+        }
+        addView(favRow)
+        addView(TextView(context).apply {
+            text = "Tippen = abrufen · lange drücken = aktuelle Einstellung speichern"
+            textSize = 11f
+        })
 
         addView(label("Helligkeit"))
         brightness.max = 255
@@ -160,6 +185,21 @@ class LampPanel(context: Context, private val device: MeshDevice) : LinearLayout
             else -> "erreichbar$via"
         }
         alpha = if (available) 1f else 0.55f
+        // show the favourite colours on the buttons
+        val hub = BridgeService.hub
+        for (n in 1..2) {
+            val fav = hub?.favorite(device.meshId, n)
+            val b = favButtons[n - 1] ?: continue
+            val col = fav?.optJSONObject("color")
+            val c = when {
+                fav == null -> Color.parseColor("#DDDDDD")
+                col != null -> Color.rgb(col.optInt("r"), col.optInt("g"), col.optInt("b"))
+                else -> Color.parseColor("#FFE0B2")   // white tone
+            }
+            (b.background as? GradientDrawable)?.setColor(c) ?: run {
+                b.background = GradientDrawable().apply { setColor(c); cornerRadius = dp(6).toFloat() }
+            }
+        }
         if (st == null || SystemClock.elapsedRealtime() - lastUserAction < 2500) return
         updating = true
         try {
