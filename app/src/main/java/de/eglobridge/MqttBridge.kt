@@ -30,6 +30,12 @@ class MqttBridge(
         const val CMD = "$BASE/cmd"
         const val DEBUG = "$BASE/debug"
         const val DEBUG_SET = "$BASE/debug/set"
+        const val MUSIC = "$BASE/music"
+        const val MUSIC_SET = "$BASE/music/set"
+        const val SENS = "$BASE/music_sensitivity"
+        const val SENS_SET = "$BASE/music_sensitivity/set"
+        const val SPEED = "$BASE/effect_speed"
+        const val SPEED_SET = "$BASE/effect_speed/set"
     }
 
     private var client: MqttAsyncClient? = null
@@ -41,6 +47,7 @@ class MqttBridge(
         devices = cfg.devices
         running = true
         lights.stateListeners.add { id, st -> publishState(id, st) }
+        lights.settingsListeners.add { handler.post { publishSettings() } }
         lights.availabilityListeners.add { id, av ->
             publish(deviceAvailTopic(id), if (av) "online" else "offline", retain = true)
         }
@@ -128,6 +135,9 @@ class MqttBridge(
             c.subscribe("$BASE/light/+/set", 0)
             c.subscribe(CMD, 0)
             c.subscribe(DEBUG_SET, 0)
+            c.subscribe(MUSIC_SET, 0)
+            c.subscribe(SENS_SET, 0)
+            c.subscribe(SPEED_SET, 0)
         } catch (t: Throwable) {
             BridgeLog.e("MQTT-Subscribe fehlgeschlagen", t)
         }
@@ -135,6 +145,7 @@ class MqttBridge(
         publishDiscovery()
         publish(BRIDGE_STATE, bridgeState, retain = true)
         publish(DEBUG, if (BridgeLog.verbose) "ON" else "OFF", retain = true)
+        publishSettings()
         val snap = lights.snapshot()
         for (d in devices) {
             val st = snap[d.meshId]
@@ -225,6 +236,39 @@ class MqttBridge(
             .put("entity_category", "config")
             .put("device", bridgeDevice).toString(), retain = true, qos = 1)
 
+        publish("homeassistant/switch/eglo_bridge_music/config", JSONObject()
+            .put("name", "Musikmodus (alle Lampen)")
+            .put("unique_id", "eglo_bridge_music")
+            .put("command_topic", MUSIC_SET)
+            .put("state_topic", MUSIC)
+            .put("availability_topic", AVAIL)
+            .put("icon", "mdi:music")
+            .put("device", bridgeDevice).toString(), retain = true, qos = 1)
+
+        publish("homeassistant/number/eglo_bridge_music_sensitivity/config", JSONObject()
+            .put("name", "Musik-Empfindlichkeit")
+            .put("unique_id", "eglo_bridge_music_sensitivity")
+            .put("command_topic", SENS_SET)
+            .put("state_topic", SENS)
+            .put("availability_topic", AVAIL)
+            .put("min", 50).put("max", 200).put("step", 5)
+            .put("unit_of_measurement", "%")
+            .put("mode", "slider")
+            .put("icon", "mdi:microphone-settings")
+            .put("device", bridgeDevice).toString(), retain = true, qos = 1)
+
+        publish("homeassistant/number/eglo_bridge_effect_speed/config", JSONObject()
+            .put("name", "Effekt-Tempo")
+            .put("unique_id", "eglo_bridge_effect_speed")
+            .put("command_topic", SPEED_SET)
+            .put("state_topic", SPEED)
+            .put("availability_topic", AVAIL)
+            .put("min", 0).put("max", 100).put("step", 5)
+            .put("unit_of_measurement", "%")
+            .put("mode", "slider")
+            .put("icon", "mdi:speedometer")
+            .put("device", bridgeDevice).toString(), retain = true, qos = 1)
+
         publish("homeassistant/button/eglo_bridge_reconnect/config", JSONObject()
             .put("name", "Neu verbinden")
             .put("unique_id", "eglo_bridge_reconnect")
@@ -245,6 +289,12 @@ class MqttBridge(
 
     fun onLog(line: String) {
         publish(LOG, line.take(250))
+    }
+
+    private fun publishSettings() {
+        publish(MUSIC, if (lights.musicActive) "ON" else "OFF", retain = true)
+        publish(SENS, (lights.musicSensitivity * 100).toInt().toString(), retain = true)
+        publish(SPEED, lights.sequenceSpeed.toString(), retain = true)
     }
 
     private fun publishState(id: Int, st: LightController.LightState) {
@@ -278,6 +328,22 @@ class MqttBridge(
             BridgeLog.i("Debug-Log " + if (BridgeLog.verbose) "an" else "aus")
             publish(DEBUG, if (BridgeLog.verbose) "ON" else "OFF", retain = true)
             return
+        }
+        when (topic) {
+            MUSIC_SET -> {
+                if (payload.trim().uppercase() == "ON") {
+                    if (!lights.startMusicAll()) publishSettings()
+                } else lights.stopAllMusic()
+                return
+            }
+            SENS_SET -> {
+                payload.trim().toFloatOrNull()?.let { lights.musicSensitivity = it / 100f }
+                return
+            }
+            SPEED_SET -> {
+                payload.trim().toFloatOrNull()?.let { lights.setSequenceSpeed(it.toInt()) }
+                return
+            }
         }
         val parts = topic.split('/')
         if (parts.size != 4 || parts[3] != "set") return

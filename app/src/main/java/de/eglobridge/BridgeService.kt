@@ -76,6 +76,7 @@ class BridgeService : Service(), MeshListener {
         mesh = m
         val lc = LightController(handler, m, cfg.devices)
         lc.musicSensitivity = cfg.musicSensitivity
+        lc.settingsListeners.add { cfg.musicSensitivity = lc.musicSensitivity }
         lights = lc
         controller = lc
         mqtt = MqttBridge(handler, m, lc, version).also { it.start(cfg) }

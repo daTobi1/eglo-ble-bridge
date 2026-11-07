@@ -112,11 +112,8 @@ class MainActivity : Activity() {
             override fun onStartTrackingTouch(sb: SeekBar) {}
             override fun onStopTrackingTouch(sb: SeekBar) {
                 // 0 = slow (5 s per colour), 100 = fast (0.2 s per colour)
-                val colorMs = (5000 - sb.progress * 48).coerceAtLeast(200)
-                val fadeMs = colorMs / 2
                 val c = BridgeService.controller ?: return
-                c.lights.forEach { c.setSequenceTiming(it.meshId, colorMs, fadeMs) }
-                Toast.makeText(this@MainActivity, "Tempo: ${colorMs} ms pro Farbe", Toast.LENGTH_SHORT).show()
+                c.setSequenceSpeed(sb.progress)
             }
         })
         val debug = findViewById<CheckBox>(R.id.debugLog)
@@ -187,13 +184,10 @@ class MainActivity : Activity() {
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 2)
             return
         }
-        val targets = c.lights.filter { c.isAvailable(it.meshId) }
-        if (targets.isEmpty()) {
+        if (c.lights.none { c.isAvailable(it.meshId) }) {
             Toast.makeText(this, "Keine Lampe erreichbar", Toast.LENGTH_LONG).show(); return
         }
-        targets.forEach {
-            c.command(it.meshId, org.json.JSONObject().put("state", "ON").put("effect", LightController.EFFECT_MUSIC))
-        }
+        c.startMusicAll()
     }
 
     /** Only touch the view when the text really changed, so the ScrollView does not jump. */

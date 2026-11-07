@@ -56,6 +56,13 @@ class LightController(
         val kelvin: Int get() = deviceTempToKelvin(temperature)
     }
 
+    /** Called whenever music mode / tempo / sensitivity changed (for MQTT state). */
+    val settingsListeners = CopyOnWriteArrayList<() -> Unit>()
+
+    /** Colour-sequence tempo 0 (slow) .. 100 (fast). */
+    @Volatile var sequenceSpeed = 50
+        private set
+
     /** Called (on the bridge thread) whenever a lamp's state changed. */
     val stateListeners = CopyOnWriteArrayList<(Int, LightState) -> Unit>()
     val availabilityListeners = CopyOnWriteArrayList<(Int, Boolean) -> Unit>()
@@ -67,7 +74,11 @@ class LightController(
     private val musicTargets = HashSet<Int>()
     private var music: MusicMode? = null
     @Volatile var musicSensitivity = 1.0f
-        set(v) { field = v; music?.sensitivity = v }
+        set(v) {
+            field = v.coerceIn(0.5f, 2.0f)
+            music?.sensitivity = field
+            settingsListeners.forEach { it() }
+        }
     private var lastMusicBrightness = -1
     private var lastMusicColorAt = 0L
 
@@ -228,6 +239,27 @@ class LightController(
         mesh.setSequenceFadeDuration(id, fadeMs)
     }
 
+    /** Tempo 0 (slow, 5 s per colour) .. 100 (fast, 0.2 s per colour) for all lamps. */
+    fun setSequenceSpeed(speed: Int) {
+        sequenceSpeed = speed.coerceIn(0, 100)
+        val colorMs = (5000 - sequenceSpeed * 48).coerceAtLeast(200)
+        val fadeMs = colorMs / 2
+        lights.forEach { setSequenceTiming(it.meshId, colorMs, fadeMs) }
+        BridgeLog.i("Effekt-Tempo $sequenceSpeed (${colorMs} ms pro Farbe)")
+        settingsListeners.forEach { it() }
+    }
+
+    /** Music mode on all reachable lamps. */
+    fun startMusicAll(): Boolean {
+        val targets = lights.filter { isAvailable(it.meshId) }
+        if (targets.isEmpty()) {
+            BridgeLog.w("Musikmodus: keine Lampe erreichbar")
+            return false
+        }
+        targets.forEach { command(it.meshId, JSONObject().put("state", "ON").put("effect", EFFECT_MUSIC)) }
+        return true
+    }
+
     // ------------------------------------------------------------------ music
 
     fun startMusicFor(id: Int) {
@@ -245,6 +277,7 @@ class LightController(
                 }
                 music = m
                 lastMusicBrightness = -1
+                settingsListeners.forEach { it() }
             }
             notifyState(id)
         }
@@ -257,6 +290,7 @@ class LightController(
             if (musicTargets.isEmpty()) {
                 music?.stop()
                 music = null
+                settingsListeners.forEach { it() }
             }
             notifyState(id)
         }
@@ -269,6 +303,7 @@ class LightController(
             music?.stop()
             music = null
             ids.forEach { st(it).effect = EFFECT_NONE; notifyState(it) }
+            settingsListeners.forEach { it() }
         }
     }
 
