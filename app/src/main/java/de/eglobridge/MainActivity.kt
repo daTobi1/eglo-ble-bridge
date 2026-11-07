@@ -25,6 +25,10 @@ import android.widget.Toast
 
 class MainActivity : Activity() {
 
+    companion object {
+        const val EXTRA_AUTOSTART = "autostart"
+    }
+
     private lateinit var cfg: Config
     private lateinit var status: TextView
     private lateinit var devicesView: TextView
@@ -53,6 +57,7 @@ class MainActivity : Activity() {
     private var updateMsg = ""
 
     private val ui = Handler(Looper.getMainLooper())
+    private var autostartOnly = false
     private val refresher = object : Runnable {
         override fun run() {
             refresh()
@@ -62,6 +67,14 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (intent?.getBooleanExtra(EXTRA_AUTOSTART, false) == true) {
+            autostartOnly = true
+            // started by BootReceiver: start the bridge while we are in the foreground,
+            // then get out of the way of the kiosk app
+            BridgeService.start(this)
+            Handler(Looper.getMainLooper()).postDelayed({ moveTaskToBack(true); finish() }, 2500)
+            return
+        }
         setContentView(R.layout.activity_main)
         cfg = Config(this)
 
@@ -174,6 +187,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        if (autostartOnly) return
         ui.post(refresher)
         // check on every app start / return to the app (independent of the bridge service)
         if (System.currentTimeMillis() - Updater.lastCheck > 2 * 60 * 1000L) checkUpdate(manual = false)
@@ -181,6 +195,7 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
+        if (autostartOnly) return
         ui.removeCallbacks(refresher)
     }
 
