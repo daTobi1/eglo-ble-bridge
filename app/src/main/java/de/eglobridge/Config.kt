@@ -67,6 +67,13 @@ class Config(context: Context) {
         get() = p.getString("mqttPassword", "")!!
         set(v) = p.edit().putString("mqttPassword", v).apply()
 
+    var debugLog: Boolean
+        get() = p.getBoolean("debugLog", false)
+        set(v) = p.edit().putBoolean("debugLog", v).apply()
+    var musicSensitivity: Float
+        get() = p.getFloat("musicSensitivity", 1.0f)
+        set(v) = p.edit().putFloat("musicSensitivity", v).apply()
+
     var enabled: Boolean
         get() = p.getBoolean("enabled", false)
         set(v) = p.edit().putBoolean("enabled", v).apply()

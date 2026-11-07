@@ -3,12 +3,7 @@ package de.eglobridge
 import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
-import android.bluetooth.BluetoothDevice
-import android.bluetooth.BluetoothGatt
-import android.bluetooth.BluetoothGattCallback
-import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothManager
-import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
@@ -17,14 +12,14 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Handler
 import android.os.SystemClock
-import java.security.SecureRandom
-import java.util.UUID
 
 data class LightStatus(
     val meshId: Int,
     val online: Boolean,
     val on: Boolean,
     val colorMode: Boolean,
+    val sequenceMode: Boolean,
+    val candleMode: Boolean,
     val whiteBrightness: Int,
     val temperature: Int,
     val colorBrightness: Int,
@@ -40,21 +35,19 @@ interface MeshListener {
 }
 
 /**
- * Keeps one BLE connection to a lamp of the AwoX/EGLO (Telink) mesh and sends
- * commands through it. All work runs on the given handler's thread.
+ * Manages up to [MAX_CONNECTIONS] simultaneous BLE connections into the
+ * AwoX/EGLO (Telink) mesh. The first connection goes to the best visible lamp;
+ * lamps that are not heard through the mesh get their own direct connection
+ * when they are visible in a scan. All work runs on the handler thread.
  */
 @SuppressLint("MissingPermission")
 class MeshManager(
     private val context: Context,
     private val handler: Handler,
     private val listener: MeshListener
-) {
-    companion object {
-        val SERVICE: UUID = UUID.fromString("00010203-0405-0607-0809-0a0b0c0d1910")
-        val CHAR_STATUS: UUID = UUID.fromString("00010203-0405-0607-0809-0a0b0c0d1911")
-        val CHAR_COMMAND: UUID = UUID.fromString("00010203-0405-0607-0809-0a0b0c0d1912")
-        val CHAR_PAIR: UUID = UUID.fromString("00010203-0405-0607-0809-0a0b0c0d1914")
+) : MeshConnection.Events {
 
+    companion object {
         const val AWOX_MANUFACTURER_ID = 0x0160
 
         const val C_POWER = 0xd0
@@ -63,64 +56,51 @@ class MeshManager(
         const val C_WHITE_BRIGHTNESS = 0xf1
         const val C_WHITE_TEMPERATURE = 0xf0
         const val C_REQUEST_STATUS = 0xda
+        const val C_PRESET = 0xc8
+        const val C_CANDLE = 0xc9
+        const val C_SEQUENCE_COLOR_DURATION = 0xf5
+        const val C_SEQUENCE_FADE_DURATION = 0xf6
 
         const val R_STATUS = 0xdb
         const val R_ONLINE_STATUS = 0xdc
 
-        private const val COMMAND_SPACING_MS = 180L
-        private const val OP_TIMEOUT_MS = 8000L
-        private const val CONNECT_TIMEOUT_MS = 35000L
+        const val BROADCAST = 0xffff
+
+        private const val MAX_CONNECTIONS = 3
         private const val SCAN_MS = 6000L
-        private const val POLL_MS = 30000L
+        private const val TICK_MS = 30000L
+        private const val MISSING_AFTER_MS = 90 * 1000L
         private const val OFFLINE_AFTER_MS = 5 * 60 * 1000L
+        private const val MIN_RSSI = -97
     }
-
-    private enum class State { STOPPED, IDLE, SCANNING, CONNECTING, PAIRING, CONNECTED }
-
-    private class Op(val name: String, val start: () -> Boolean)
-    private class Cmd(val dest: Int, val command: Int, val data: ByteArray)
 
     private val btManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
     private val adapter: BluetoothAdapter? get() = btManager.adapter
-    private val random = SecureRandom()
 
+    private var running = false
     private var meshName = ByteArray(0)
     private var meshPassword = ByteArray(0)
     private var devices: List<MeshDevice> = emptyList()
+    private val lights get() = devices.filter { it.isLight }
 
-    private var state = State.STOPPED
-    private var gatt: BluetoothGatt? = null
-    private var connectedMac = ""
-    private var sessionKey: ByteArray? = null
-    private var sessionRandom = ByteArray(8)
-    private var statusChar: BluetoothGattCharacteristic? = null
-    private var commandChar: BluetoothGattCharacteristic? = null
-    private var pairChar: BluetoothGattCharacteristic? = null
-
-    private val ops = ArrayDeque<Op>()
-    private var opBusy = false
-    private val commands = ArrayDeque<Cmd>()
-    private var lastCommandAt = 0L
-    private var pumpScheduled = false
-
-    private var reconnectDelay = 5000L
-    private var candidates = ArrayDeque<String>()
+    private val connections = LinkedHashMap<String, MeshConnection>()
+    private var connecting: MeshConnection? = null
+    private var scanning = false
+    private var scanPurpose = ""
     private val scanRssi = HashMap<String, Int>()
+    private val scanSeenAt = HashMap<String, Long>()
+
+    private var candidates = ArrayDeque<String>()
+    private val attemptsForMac = HashMap<String, Int>()
+    private var reconnectDelay = 5000L
+    private var tick = 0
+
     private val lastSeen = HashMap<Int, Long>()
     private val online = HashSet<Int>()
-    private var preferredMac: String? = null
-    private val attemptsForMac = HashMap<String, Int>()
+    private val heardVia = HashMap<Int, String>()
+    private var lastStateText = ""
 
-    val stateName: String get() = when (state) {
-        State.CONNECTED -> "verbunden mit $connectedMac"
-        State.CONNECTING -> "verbinde mit $connectedMac"
-        State.PAIRING -> "Anmeldung am Mesh ($connectedMac)"
-        State.SCANNING -> "suche Lampen"
-        State.IDLE -> "warte"
-        State.STOPPED -> "gestoppt"
-    }
-
-    // ---------------------------------------------------------------- lifecycle
+    // ---------------------------------------------------------------- public API
 
     fun start(cfg: Config) {
         handler.post {
@@ -131,95 +111,116 @@ class MeshManager(
                 BridgeLog.e("Mesh-Name/Passwort länger als 16 Bytes – ungültig")
                 return@post
             }
-            BridgeLog.i("Mesh-Bridge startet, ${devices.size} Geräte: " +
-                devices.joinToString { "${it.name} [${it.meshId}] ${it.mac}" })
-            state = State.IDLE
-            setState(State.IDLE)
-            beginConnectCycle()
-            handler.postDelayed(pollRunnable, POLL_MS)
+            running = true
+            BridgeLog.i("Mesh-Bridge startet mit ${lights.size} Lampen")
+            publishState()
+            scanAndConnect("Start")
+            handler.postDelayed(tickRunnable, TICK_MS)
         }
     }
 
     fun stop() {
         handler.post {
-            handler.removeCallbacks(pollRunnable)
+            running = false
+            handler.removeCallbacks(tickRunnable)
             handler.removeCallbacks(reconnectRunnable)
-            state = State.STOPPED
             stopScan()
-            closeGatt()
-            setState(State.STOPPED)
+            connecting?.close("Stopp")
+            connections.values.toList().forEach { it.close("Stopp") }
+            connections.clear()
+            publishState()
         }
     }
 
     fun reconnect() {
         handler.post {
             BridgeLog.i("Neuverbindung angefordert")
-            closeGatt()
-            reconnectDelay = 2000L
-            setState(State.IDLE)
-            beginConnectCycle()
+            connecting?.close("Neuverbindung")
+            connections.values.toList().forEach { it.close("Neuverbindung") }
+            attemptsForMac.clear()
+            reconnectDelay = 3000L
+            scheduleReconnect(1500)
         }
     }
 
-    private fun setState(s: State) {
-        state = s
-        listener.onMeshState(stateName)
+    fun deviceName(meshId: Int) = devices.firstOrNull { it.meshId == meshId }?.name?.trim() ?: "#$meshId"
+
+    // ---------------------------------------------------------------- state text
+
+    private fun publishState() {
+        val paired = connections.values.filter { it.isPaired }
+        val text = when {
+            !running -> "gestoppt"
+            paired.isNotEmpty() -> "verbunden: " + paired.joinToString { c ->
+                val d = devices.firstOrNull { it.mac == c.mac }
+                (d?.name?.trim() ?: c.mac) + " (" + c.mac.takeLast(5) + ")"
+            }
+            connecting != null -> "verbinde mit ${connecting!!.mac}"
+            scanning -> "suche Lampen"
+            else -> "warte auf Lampen"
+        }
+        if (text != lastStateText) {
+            lastStateText = text
+            listener.onMeshState(text)
+        }
     }
 
-    private val pollRunnable = object : Runnable {
+    // ---------------------------------------------------------------- periodic maintenance
+
+    private val tickRunnable = object : Runnable {
         override fun run() {
-            if (state == State.CONNECTED) {
-                queueCommand(0xffff, C_REQUEST_STATUS, byteArrayOf(0x10))
+            if (!running) return
+            tick++
+            val paired = connections.values.filter { it.isPaired }
+            if (paired.isNotEmpty()) {
+                paired.forEach { it.send(BROADCAST, C_REQUEST_STATUS, byteArrayOf(0x10)) }
             }
             val now = SystemClock.elapsedRealtime()
             for (id in online.toList()) {
                 if (now - (lastSeen[id] ?: 0L) > OFFLINE_AFTER_MS) {
                     online.remove(id)
-                    BridgeLog.w("Gerät $id seit 5 Minuten ohne Meldung -> offline")
+                    heardVia.remove(id)
+                    BridgeLog.w("${deviceName(id)} seit 5 Minuten ohne Meldung -> offline")
                     listener.onDeviceOffline(id)
                 }
             }
-            handler.postDelayed(this, POLL_MS)
+            // every 2nd tick: look for lamps that are not reachable through the existing connections
+            if (paired.isNotEmpty() && tick % 2 == 0 && connecting == null && !scanning &&
+                connections.size < MAX_CONNECTIONS && missingLights().isNotEmpty()
+            ) {
+                scanForMissing()
+            }
+            handler.postDelayed(this, TICK_MS)
         }
     }
 
-    // ---------------------------------------------------------------- connect cycle
+    private fun missingLights(): List<MeshDevice> {
+        val now = SystemClock.elapsedRealtime()
+        return lights.filter { d ->
+            now - (lastSeen[d.meshId] ?: 0L) > MISSING_AFTER_MS && !connections.containsKey(d.mac)
+        }
+    }
+
+    // ---------------------------------------------------------------- scanning
 
     private fun hasLocationPermission(): Boolean =
         Build.VERSION.SDK_INT < 23 ||
             context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
-
-    private fun beginConnectCycle() {
-        if (state == State.STOPPED) return
-        val a = adapter
-        if (a == null || !a.isEnabled) {
-            BridgeLog.w("Bluetooth ist aus – neuer Versuch in 15 s")
-            scheduleReconnect(15000L)
-            return
-        }
-        if (devices.isEmpty()) {
-            BridgeLog.e("Keine Geräte konfiguriert – bitte zuerst aus der AwoX-Cloud importieren")
-            return
-        }
-        if (hasLocationPermission()) startScan() else {
-            BridgeLog.w("Keine Standort-Berechtigung: verbinde ohne Scan der Reihe nach")
-            buildCandidates()
-            tryNextCandidate()
-        }
-    }
 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val mac = result.device.address.uppercase()
             val known = devices.any { it.mac == mac }
             val awox = result.scanRecord?.getManufacturerSpecificData(AWOX_MANUFACTURER_ID) != null
-            if (known || awox) {
-                handler.post {
-                    if (!scanRssi.containsKey(mac)) {
-                        BridgeLog.i("Gefunden: $mac RSSI ${result.rssi}${if (known) "" else " (AwoX, nicht in Liste)"}")
-                    }
-                    scanRssi[mac] = result.rssi
+            if (!known && !awox) return
+            val rssi = result.rssi
+            handler.post {
+                if (!scanRssi.containsKey(mac)) {
+                    val name = devices.firstOrNull { it.mac == mac }?.name?.trim() ?: "unbekannt"
+                    BridgeLog.i("Gefunden: $name $mac RSSI $rssi")
                 }
+                scanRssi[mac] = rssi
+                scanSeenAt[mac] = SystemClock.elapsedRealtime()
             }
         }
 
@@ -228,25 +229,30 @@ class MeshManager(
         }
     }
 
-    private fun startScan() {
+    private fun startScan(purpose: String, then: () -> Unit) {
         val scanner = adapter?.bluetoothLeScanner
-        if (scanner == null) {
-            buildCandidates(); tryNextCandidate(); return
+        if (scanner == null || !hasLocationPermission()) {
+            if (!hasLocationPermission()) BridgeLog.w("Keine Standort-Berechtigung – verbinde ohne Scan")
+            then(); return
         }
         scanRssi.clear()
-        setState(State.SCANNING)
+        scanning = true
+        scanPurpose = purpose
+        publishState()
         try {
             val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
             scanner.startScan(null, settings, scanCallback)
         } catch (t: Throwable) {
             BridgeLog.e("Scan konnte nicht gestartet werden", t)
-            buildCandidates(); tryNextCandidate(); return
+            scanning = false
+            then(); return
         }
         handler.postDelayed({
             stopScan()
-            buildCandidates()
+            scanning = false
+            publishState()
             // give the controller a moment after stopping the scan
-            handler.postDelayed({ tryNextCandidate() }, 500)
+            handler.postDelayed({ if (running) then() }, 500)
         }, SCAN_MS)
     }
 
@@ -254,29 +260,75 @@ class MeshManager(
         try { adapter?.bluetoothLeScanner?.stopScan(scanCallback) } catch (_: Throwable) { }
     }
 
-    private fun buildCandidates() {
-        val known = devices.map { it.mac }.distinct()
-        val seen = known.filter { scanRssi.containsKey(it) }.sortedByDescending { scanRssi[it] }
-        val unseen = known.filter { !scanRssi.containsKey(it) }
-            .sortedByDescending { if (it == preferredMac) 1 else 0 }
-        candidates = ArrayDeque(seen + unseen)
-        attemptsForMac.clear()
-        if (scanRssi.isNotEmpty() || hasLocationPermission()) {
-            BridgeLog.i("Im Scan gefunden: " + (if (seen.isEmpty()) "keine bekannte Lampe" else
-                seen.joinToString { "$it(${scanRssi[it]})" }))
+    // ---------------------------------------------------------------- connecting
+
+    private fun scanAndConnect(why: String) {
+        if (!running || connecting != null || scanning) return
+        val a = adapter
+        if (a == null || !a.isEnabled) {
+            BridgeLog.w("Bluetooth ist aus – neuer Versuch in 15 s")
+            scheduleReconnect(15000L)
+            return
+        }
+        if (lights.isEmpty()) {
+            BridgeLog.e("Keine Lampen konfiguriert – bitte zuerst aus der AwoX-Cloud importieren")
+            return
+        }
+        startScan(why) {
+            val known = lights.map { it.mac }.distinct().filter { !connections.containsKey(it) }
+            val seen = known.filter { scanRssi.containsKey(it) }.sortedByDescending { scanRssi[it] }
+            val unseen = known.filter { !scanRssi.containsKey(it) }
+            candidates = ArrayDeque(seen + unseen)
+            attemptsForMac.clear()
+            BridgeLog.i("Im Scan gefunden: " + if (seen.isEmpty()) "keine bekannte Lampe" else
+                seen.joinToString { "${nameForMac(it)} (${scanRssi[it]})" })
+            tryNextCandidate()
         }
     }
 
+    private fun scanForMissing() {
+        startScan("fehlende Lampen") {
+            val missing = missingLights()
+            val visible = missing.filter { (scanRssi[it.mac] ?: -999) >= MIN_RSSI }
+                .sortedByDescending { scanRssi[it.mac] }
+            if (visible.isEmpty()) {
+                BridgeLog.i("Nicht erreichbar: " + missing.joinToString { it.name.trim() } +
+                    " – nicht direkt sichtbar")
+                return@startScan
+            }
+            BridgeLog.i("Direktverbindung zusätzlich zu: " +
+                visible.joinToString { "${it.name.trim()} (${scanRssi[it.mac]})" })
+            candidates = ArrayDeque(visible.map { it.mac })
+            attemptsForMac.clear()
+            tryNextCandidate()
+        }
+    }
+
+    private fun nameForMac(mac: String) = devices.firstOrNull { it.mac == mac }?.name?.trim() ?: mac
+
     private fun tryNextCandidate() {
-        if (state == State.STOPPED) return
-        val mac = candidates.removeFirstOrNull()
+        if (!running || connecting != null) return
+        if (connections.size >= MAX_CONNECTIONS) return
+        var mac = candidates.removeFirstOrNull()
+        while (mac != null && connections.containsKey(mac)) mac = candidates.removeFirstOrNull()
         if (mac == null) {
-            BridgeLog.w("Keine Lampe erreichbar – neuer Versuch in ${reconnectDelay / 1000} s")
-            scheduleReconnect(reconnectDelay)
-            reconnectDelay = minOf(reconnectDelay * 2, 120000L)
+            if (connections.values.none { it.isPaired }) {
+                BridgeLog.w("Keine Lampe erreichbar – neuer Versuch in ${reconnectDelay / 1000} s")
+                scheduleReconnect(reconnectDelay)
+                reconnectDelay = minOf(reconnectDelay * 2, 120000L)
+            }
+            publishState()
             return
         }
-        connectTo(mac)
+        val device = try { adapter!!.getRemoteDevice(mac) } catch (t: Throwable) {
+            BridgeLog.e("Ungültige MAC $mac", t); tryNextCandidate(); return
+        }
+        val auto = (attemptsForMac[mac] ?: 0) >= 1
+        val c = MeshConnection(context, handler, mac, meshName, meshPassword, auto, this)
+        connecting = c
+        connections[mac] = c
+        publishState()
+        c.connect(device)
     }
 
     private fun scheduleReconnect(delay: Long) {
@@ -285,254 +337,64 @@ class MeshManager(
     }
 
     private val reconnectRunnable = Runnable {
-        if (state == State.IDLE) beginConnectCycle()
+        if (running && connections.values.none { it.isPaired }) scanAndConnect("Neuverbindung")
     }
 
-    private val connectTimeout = Runnable {
-        if (state == State.CONNECTING || state == State.PAIRING) {
-            BridgeLog.w("Zeitüberschreitung bei $connectedMac")
-            closeGatt()
-            setState(State.IDLE)
-            val n = (attemptsForMac[connectedMac] ?: 0) + 1
-            attemptsForMac[connectedMac] = n
-            if (n < 2 && scanRssi.containsKey(connectedMac)) {
-                // lamp is visible but direct connect timed out: try once more in autoConnect mode
-                candidates.addFirst(connectedMac)
-            }
-            handler.postDelayed({ tryNextCandidate() }, 1000)
-        }
-    }
+    // ---------------------------------------------------------------- MeshConnection.Events
 
-    private fun connectTo(mac: String) {
-        val device: BluetoothDevice = try {
-            adapter!!.getRemoteDevice(mac)
-        } catch (t: Throwable) {
-            BridgeLog.e("Ungültige MAC $mac", t); tryNextCandidate(); return
-        }
-        connectedMac = mac
-        setState(State.CONNECTING)
-        val auto = (attemptsForMac[mac] ?: 0) >= 1
-        BridgeLog.i("Verbinde mit $mac${if (auto) " (autoConnect)" else ""} …")
-        gatt = if (Build.VERSION.SDK_INT >= 23) {
-            device.connectGatt(context, auto, gattCallback, BluetoothDevice.TRANSPORT_LE)
-        } else {
-            device.connectGatt(context, auto, gattCallback)
-        }
-        handler.postDelayed(connectTimeout, CONNECT_TIMEOUT_MS)
-    }
-
-    private fun closeGatt() {
-        handler.removeCallbacks(connectTimeout)
-        handler.removeCallbacks(opTimeout)
-        val g = gatt
-        gatt = null
-        sessionKey = null
-        statusChar = null; commandChar = null; pairChar = null
-        ops.clear(); opBusy = false
-        if (g != null) {
-            try { g.disconnect() } catch (_: Throwable) { }
-            try { g.close() } catch (_: Throwable) { }
-        }
-    }
-
-    private fun onDisconnected(reason: String) {
-        val wasConnected = state == State.CONNECTED
-        closeGatt()
-        if (state == State.STOPPED) return
-        setState(State.IDLE)
-        if (wasConnected) {
-            BridgeLog.w("Verbindung zu $connectedMac getrennt ($reason)")
-            reconnectDelay = 3000L
-            scheduleReconnect(reconnectDelay)
-        } else {
-            BridgeLog.w("Verbindung zu $connectedMac fehlgeschlagen ($reason)")
-            val n = (attemptsForMac[connectedMac] ?: 0) + 1
-            attemptsForMac[connectedMac] = n
-            if (n < 2) {
-                // Android often reports GATT error 133 on the first attempt – retry the same lamp once
-                candidates.addFirst(connectedMac)
-            }
-            handler.postDelayed({ tryNextCandidate() }, 1500)
-        }
-    }
-
-    // ---------------------------------------------------------------- GATT op queue
-
-    private val opTimeout = Runnable {
-        BridgeLog.w("GATT-Operation hängt – trenne Verbindung")
-        onDisconnected("Timeout")
-    }
-
-    private fun enqueueOp(name: String, start: () -> Boolean) {
-        ops.addLast(Op(name, start))
-        runNextOp()
-    }
-
-    private fun runNextOp() {
-        if (opBusy) return
-        val op = ops.removeFirstOrNull() ?: return
-        opBusy = true
-        val ok = try { op.start() } catch (t: Throwable) { BridgeLog.e("GATT ${op.name}", t); false }
-        if (!ok) {
-            BridgeLog.w("GATT-Operation ${op.name} konnte nicht gestartet werden")
-            opBusy = false
-            onDisconnected("${op.name} fehlgeschlagen")
-            return
-        }
-        handler.removeCallbacks(opTimeout)
-        handler.postDelayed(opTimeout, OP_TIMEOUT_MS)
-    }
-
-    private fun opDone() {
-        handler.removeCallbacks(opTimeout)
-        opBusy = false
-        runNextOp()
-    }
-
-    @Suppress("DEPRECATION")
-    private fun write(char: BluetoothGattCharacteristic, value: ByteArray, name: String) {
-        enqueueOp(name) {
-            val g = gatt ?: return@enqueueOp false
-            char.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-            char.value = value
-            g.writeCharacteristic(char)
-        }
-    }
-
-    private fun read(char: BluetoothGattCharacteristic, name: String) {
-        enqueueOp(name) { gatt?.readCharacteristic(char) ?: false }
-    }
-
-    // ---------------------------------------------------------------- GATT callback
-
-    private val gattCallback = object : BluetoothGattCallback() {
-        override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
-            handler.post {
-                if (g != gatt) { try { g.close() } catch (_: Throwable) { }; return@post }
-                if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) {
-                    BridgeLog.i("BLE verbunden, suche Dienste …")
-                    handler.postDelayed({ if (g == gatt) g.discoverServices() }, 600)
-                } else {
-                    onDisconnected("Status $status")
-                }
-            }
-        }
-
-        override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
-            handler.post {
-                if (g != gatt) return@post
-                val svc = g.getService(SERVICE)
-                if (status != BluetoothGatt.GATT_SUCCESS || svc == null) {
-                    BridgeLog.w("Telink-Mesh-Dienst nicht gefunden (Status $status)")
-                    onDisconnected("kein Mesh-Dienst"); return@post
-                }
-                statusChar = svc.getCharacteristic(CHAR_STATUS)
-                commandChar = svc.getCharacteristic(CHAR_COMMAND)
-                pairChar = svc.getCharacteristic(CHAR_PAIR)
-                if (statusChar == null || commandChar == null || pairChar == null) {
-                    BridgeLog.w("Mesh-Charakteristiken fehlen")
-                    onDisconnected("Charakteristik fehlt"); return@post
-                }
-                setState(State.PAIRING)
-                random.nextBytes(sessionRandom)
-                val pkt = MeshCrypto.makePairPacket(meshName, meshPassword, sessionRandom)
-                write(pairChar!!, pkt, "pair-write")
-                read(pairChar!!, "pair-read")
-            }
-        }
-
-        @Deprecated("Deprecated in Java")
-        override fun onCharacteristicWrite(g: BluetoothGatt, c: BluetoothGattCharacteristic, status: Int) {
-            handler.post {
-                if (g != gatt) return@post
-                if (status != BluetoothGatt.GATT_SUCCESS) {
-                    BridgeLog.w("Schreiben auf ${c.uuid.toString().takeLast(4)} fehlgeschlagen (Status $status)")
-                }
-                opDone()
-            }
-        }
-
-        @Deprecated("Deprecated in Java")
-        override fun onCharacteristicRead(g: BluetoothGatt, c: BluetoothGattCharacteristic, status: Int) {
-            @Suppress("DEPRECATION") val value = c.value?.copyOf() ?: ByteArray(0)
-            handler.post {
-                if (g != gatt) return@post
-                opDone()
-                if (c.uuid == CHAR_PAIR) handlePairReply(status, value)
-            }
-        }
-
-        @Deprecated("Deprecated in Java")
-        override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic) {
-            @Suppress("DEPRECATION") val value = c.value?.copyOf() ?: ByteArray(0)
-            handler.post {
-                if (g != gatt) return@post
-                if (c.uuid == CHAR_STATUS) handleNotification(value)
-            }
-        }
-    }
-
-    private fun handlePairReply(status: Int, value: ByteArray) {
-        if (status != BluetoothGatt.GATT_SUCCESS || value.isEmpty()) {
-            onDisconnected("Pair-Antwort fehlt (Status $status)"); return
-        }
-        when (value[0].toInt() and 0xff) {
-            0x0d -> {
-                sessionKey = MeshCrypto.makeSessionKey(
-                    meshName, meshPassword, sessionRandom, value.copyOfRange(1, minOf(9, value.size))
-                )
-                BridgeLog.i("Mesh-Anmeldung an $connectedMac erfolgreich")
-                val sc = statusChar!!
-                gatt?.setCharacteristicNotification(sc, true)
-                // AwoX/Telink: notifications are enabled by writing 0x01 to the status characteristic itself
-                write(sc, byteArrayOf(0x01), "notify-enable")
-                enqueueOp("connected") {
-                    handler.post { onPaired() }
-                    true
-                }
-            }
-            0x0e -> {
-                BridgeLog.e("Mesh-Zugangsdaten werden von $connectedMac abgelehnt (falsches Konto / neu gekoppelt?)")
-                onDisconnected("Anmeldung abgelehnt")
-            }
-            else -> {
-                BridgeLog.e("Unerwartete Pair-Antwort: ${MeshCrypto.hex(value)}")
-                onDisconnected("unerwartete Pair-Antwort")
-            }
-        }
-    }
-
-    private fun onPaired() {
-        debugPackets = 0
-        BridgeLog.i("Geräte: " + devices.joinToString { "${it.name} [${it.meshId}] ${it.mac}" })
-        // the pseudo-op "connected" has no callback; release the queue
-        opDone()
-        handler.removeCallbacks(connectTimeout)
-        preferredMac = connectedMac
+    override fun onPaired(c: MeshConnection) {
+        if (connecting == c) connecting = null
         reconnectDelay = 5000L
-        setState(State.CONNECTED)
-        commands.addFirst(Cmd(0xffff, C_REQUEST_STATUS, byteArrayOf(0x10)))
-        for (d in devices) commands.addLast(Cmd(d.meshId, C_REQUEST_STATUS, byteArrayOf(0x10)))
-        pumpCommands()
+        attemptsForMac.remove(c.mac)
+        publishState()
+        c.sendFirst(BROADCAST, C_REQUEST_STATUS, byteArrayOf(0x10))
+        // ask the directly connected lamp itself, too
+        devices.firstOrNull { it.mac == c.mac }?.let { c.send(it.meshId, C_REQUEST_STATUS, byteArrayOf(0x10)) }
+        // continue with remaining candidates (additional direct connections)
+        handler.postDelayed({ tryNextCandidate() }, 1000)
     }
 
-    // ---------------------------------------------------------------- notifications
+    override fun onClosed(c: MeshConnection, wasPaired: Boolean, reason: String) {
+        if (connections[c.mac] == c) connections.remove(c.mac)
+        val wasConnecting = connecting == c
+        if (wasConnecting) connecting = null
+        heardVia.entries.removeAll { it.value == c.mac }
+        if (!running) return
+
+        if (wasPaired) {
+            BridgeLog.w("Verbindung zu ${nameForMac(c.mac)} getrennt ($reason)")
+        } else {
+            BridgeLog.w("Verbindung zu ${nameForMac(c.mac)} fehlgeschlagen ($reason)")
+            val n = (attemptsForMac[c.mac] ?: 0) + 1
+            attemptsForMac[c.mac] = n
+            // Android often fails the first attempt (GATT 133 / timeout): retry once in autoConnect mode
+            if (n < 2 && scanRssi.containsKey(c.mac)) candidates.addFirst(c.mac)
+        }
+
+        if (connections.values.none { it.isPaired }) {
+            for (id in online.toList()) listener.onDeviceOffline(id)
+            online.clear()
+        }
+        publishState()
+
+        if (wasConnecting && candidates.isNotEmpty()) {
+            handler.postDelayed({ tryNextCandidate() }, 1500)
+        } else if (connections.values.none { it.isPaired } && connecting == null) {
+            if (wasPaired) {
+                reconnectDelay = 3000L
+                scheduleReconnect(reconnectDelay)
+            } else {
+                handler.postDelayed({ tryNextCandidate() }, 1500)
+            }
+        }
+    }
 
     private fun u(b: Byte) = b.toInt() and 0xff
 
-    private var debugPackets = 0
-
-    private fun handleNotification(raw: ByteArray) {
-        val key = sessionKey ?: return
-        if (raw.size < 20) {
-            BridgeLog.w("Kurze Notification (${raw.size} B): ${MeshCrypto.hex(raw)}")
-            return
-        }
-        val p = MeshCrypto.decryptPacket(key, connectedMac, raw)
+    override fun onPacket(c: MeshConnection, p: ByteArray) {
         val cmd = u(p[7])
-        if (debugPackets < 60) {
-            debugPackets++
-            BridgeLog.i("RX %02x src=%d: %s".format(cmd, u(p[4]) * 256 + u(p[3]), MeshCrypto.hex(p)))
+        if (BridgeLog.verbose) {
+            BridgeLog.i("RX %02x via %s: %s".format(cmd, c.mac.takeLast(5), MeshCrypto.hex(p)))
         }
         val status = when (cmd) {
             R_ONLINE_STATUS -> {
@@ -542,6 +404,8 @@ class MeshManager(
                     online = u(p[11]) != 0,
                     on = (mode and 1) == 1,
                     colorMode = ((mode shr 1) and 1) == 1,
+                    sequenceMode = ((mode shr 2) and 1) == 1,
+                    candleMode = ((mode shr 4) and 1) == 1,
                     whiteBrightness = u(p[13]), temperature = u(p[14]), colorBrightness = u(p[15]),
                     r = u(p[16]), g = u(p[17]), b = u(p[18])
                 )
@@ -553,67 +417,72 @@ class MeshManager(
                     online = true,
                     on = (mode and 1) == 1,
                     colorMode = ((mode shr 1) and 1) == 1,
+                    sequenceMode = ((mode shr 2) and 1) == 1,
+                    candleMode = ((mode shr 4) and 1) == 1,
                     whiteBrightness = u(p[11]), temperature = u(p[12]), colorBrightness = u(p[13]),
                     r = u(p[14]), g = u(p[15]), b = u(p[16])
                 )
             }
             else -> null
-        }
-        if (status == null) return
+        } ?: return
+
         if (devices.none { it.meshId == status.meshId }) {
-            BridgeLog.w("Meldung von unbekannter Mesh-ID ${status.meshId} ignoriert")
+            if (BridgeLog.verbose) BridgeLog.w("Meldung von unbekannter Mesh-ID ${status.meshId}")
             return
         }
-
         if (status.online) {
             lastSeen[status.meshId] = SystemClock.elapsedRealtime()
-            if (online.add(status.meshId)) BridgeLog.i("Gerät ${status.meshId} online")
+            heardVia[status.meshId] = c.mac
+            if (online.add(status.meshId)) {
+                BridgeLog.i("${deviceName(status.meshId)} online (über ${nameForMac(c.mac)})")
+            }
             listener.onStatus(status)
         } else {
-            if (online.remove(status.meshId)) BridgeLog.w("Gerät ${status.meshId} meldet offline")
+            if (online.remove(status.meshId)) BridgeLog.w("${deviceName(status.meshId)} meldet offline")
+            heardVia.remove(status.meshId)
             listener.onDeviceOffline(status.meshId)
         }
     }
 
-    // ---------------------------------------------------------------- commands
+    // ---------------------------------------------------------------- commands (thread safe)
 
-    fun setPower(dest: Int, on: Boolean) = queueCommand(dest, C_POWER, byteArrayOf(if (on) 1 else 0, 0, 0))
-    fun setColor(dest: Int, r: Int, g: Int, b: Int) =
-        queueCommand(dest, C_COLOR, byteArrayOf(0x04, r.toByte(), g.toByte(), b.toByte()))
-    fun setColorBrightness(dest: Int, v: Int) = queueCommand(dest, C_COLOR_BRIGHTNESS, byteArrayOf(v.toByte()))
-    fun setWhiteBrightness(dest: Int, v: Int) = queueCommand(dest, C_WHITE_BRIGHTNESS, byteArrayOf(v.toByte()))
-    fun setWhiteTemperature(dest: Int, v: Int) = queueCommand(dest, C_WHITE_TEMPERATURE, byteArrayOf(v.toByte()))
-
-    fun queueCommand(dest: Int, command: Int, data: ByteArray) {
+    private fun route(dest: Int, command: Int, data: ByteArray, coalesce: Boolean) {
         handler.post {
-            if (state != State.CONNECTED) {
-                BridgeLog.w("Nicht verbunden – Befehl %02x für %d wird nachgeholt".format(command, dest))
+            val paired = connections.values.filter { it.isPaired }
+            if (paired.isEmpty()) {
+                BridgeLog.w("Nicht verbunden – Befehl %02x für %s verworfen".format(command, deviceName(dest)))
+                return@post
             }
-            commands.addLast(Cmd(dest, command, data))
-            while (commands.size > 30) commands.removeFirst()
-            pumpCommands()
+            if (dest == BROADCAST) {
+                paired.forEach { it.send(dest, command, data, coalesce) }
+                return@post
+            }
+            val d = devices.firstOrNull { it.meshId == dest }
+            val direct = d?.let { connections[it.mac] }?.takeIf { it.isPaired }
+            val via = heardVia[dest]?.let { connections[it] }?.takeIf { it.isPaired }
+            when {
+                direct != null -> direct.send(dest, command, data, coalesce)
+                via != null -> via.send(dest, command, data, coalesce)
+                // unknown route: send through every connection, the mesh will forward it
+                else -> paired.forEach { it.send(dest, command, data, coalesce) }
+            }
         }
     }
 
-    private fun pumpCommands() {
-        if (state != State.CONNECTED || pumpScheduled) return
-        val wait = lastCommandAt + COMMAND_SPACING_MS - SystemClock.elapsedRealtime()
-        if (wait > 0) {
-            pumpScheduled = true
-            handler.postDelayed({ pumpScheduled = false; pumpCommands() }, wait)
-            return
-        }
-        val cmd = commands.removeFirstOrNull() ?: return
-        val key = sessionKey ?: return
-        val char = commandChar ?: return
-        val seq = ByteArray(3).also { random.nextBytes(it) }
-        val pkt = MeshCrypto.makeCommandPacket(key, connectedMac, cmd.dest, cmd.command, cmd.data, seq)
-        lastCommandAt = SystemClock.elapsedRealtime()
-        BridgeLog.i("TX %02x an %d: %s".format(cmd.command, cmd.dest, MeshCrypto.hex(cmd.data)))
-        write(char, pkt, "cmd-%02x".format(cmd.command))
-        if (commands.isNotEmpty()) {
-            pumpScheduled = true
-            handler.postDelayed({ pumpScheduled = false; pumpCommands() }, COMMAND_SPACING_MS)
-        }
-    }
+    fun setPower(dest: Int, on: Boolean) = route(dest, C_POWER, byteArrayOf(if (on) 1 else 0, 0, 0), false)
+    fun setColor(dest: Int, r: Int, g: Int, b: Int, coalesce: Boolean = true) =
+        route(dest, C_COLOR, byteArrayOf(0x04, r.toByte(), g.toByte(), b.toByte()), coalesce)
+    fun setColorBrightness(dest: Int, v: Int, coalesce: Boolean = true) =
+        route(dest, C_COLOR_BRIGHTNESS, byteArrayOf(v.toByte()), coalesce)
+    fun setWhiteBrightness(dest: Int, v: Int) = route(dest, C_WHITE_BRIGHTNESS, byteArrayOf(v.toByte()), true)
+    fun setWhiteTemperature(dest: Int, v: Int) = route(dest, C_WHITE_TEMPERATURE, byteArrayOf(v.toByte()), true)
+    fun setPreset(dest: Int, preset: Int) = route(dest, C_PRESET, byteArrayOf(preset.toByte()), false)
+    fun setCandle(dest: Int) = route(dest, C_CANDLE, byteArrayOf(0), false)
+    fun setSequenceColorDuration(dest: Int, ms: Int) = route(dest, C_SEQUENCE_COLOR_DURATION, le32(ms), true)
+    fun setSequenceFadeDuration(dest: Int, ms: Int) = route(dest, C_SEQUENCE_FADE_DURATION, le32(ms), true)
+    fun requestStatus(dest: Int) = route(dest, C_REQUEST_STATUS, byteArrayOf(0x10), true)
+
+    private fun le32(v: Int) = byteArrayOf(
+        (v and 0xff).toByte(), ((v shr 8) and 0xff).toByte(), ((v shr 16) and 0xff).toByte(), ((v shr 24) and 0xff).toByte()
+    )
 }

@@ -42,6 +42,71 @@
                 android:text="Stoppen" />
         </LinearLayout>
 
+        <TextView
+            style="@android:style/TextAppearance.Material.Title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="Lampen" />
+
+        <LinearLayout
+            android:id="@+id/lampsBox"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:background="#F3E5F5"
+            android:orientation="vertical"
+            android:padding="12dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textStyle="bold"
+                android:text="Musikmodus (Mikrofon des Tablets)" />
+
+            <Button
+                android:id="@+id/btnMusic"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Musikmodus für alle Lampen starten" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Empfindlichkeit" />
+
+            <SeekBar
+                android:id="@+id/musicSensitivity"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="150" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Tempo der Farbwechsel-Effekte" />
+
+            <SeekBar
+                android:id="@+id/sequenceSpeed"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="100"
+                android:progress="50" />
+        </LinearLayout>
+
+        <CheckBox
+            android:id="@+id/debugLog"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Debug-Log (alle Mesh-Pakete protokollieren)" />
+
         <LinearLayout
             android:id="@+id/updateBox"
             android:layout_width="match_parent"

@@ -21,6 +21,8 @@ class BridgeService : Service(), MeshListener {
         private const val NOTIF_ID = 1
         @Volatile var running = false
         @Volatile var meshState = "gestoppt"
+        /** Access for the in-app light controls while the service runs. */
+        @Volatile var controller: LightController? = null
 
         fun start(ctx: Context) {
             val i = Intent(ctx, BridgeService::class.java)
@@ -36,6 +38,7 @@ class BridgeService : Service(), MeshListener {
     private lateinit var handler: Handler
     private var mesh: MeshManager? = null
     private var mqtt: MqttBridge? = null
+    private var lights: LightController? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private val logListener: (String) -> Unit = { line -> handler.post { mqtt?.onLog(line) } }
@@ -68,9 +71,14 @@ class BridgeService : Service(), MeshListener {
             packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
         } catch (_: Exception) { "?" }
         BridgeLog.i("EGLO Bridge $version gestartet")
+        BridgeLog.verbose = cfg.debugLog
         val m = MeshManager(this, handler, this)
         mesh = m
-        mqtt = MqttBridge(handler, m, version).also { it.start(cfg) }
+        val lc = LightController(handler, m, cfg.devices)
+        lc.musicSensitivity = cfg.musicSensitivity
+        lights = lc
+        controller = lc
+        mqtt = MqttBridge(handler, m, lc, version).also { it.start(cfg) }
         BridgeLog.listeners.add(logListener)
         m.start(cfg)
         handler.postDelayed(updateCheck, 60 * 1000L)
@@ -115,11 +123,14 @@ class BridgeService : Service(), MeshListener {
         BridgeLog.listeners.remove(logListener)
         handler.removeCallbacks(updateCheck)
         BridgeLog.i("Bridge gestoppt")
+        controller = null
+        lights?.shutdown()
         mesh?.stop()
-        mqtt?.markAllOffline()
+        lights?.markAllOffline()
         mqtt?.stop()
         mesh = null
         mqtt = null
+        lights = null
         handler.postDelayed({ thread.quitSafely() }, 1000)
         releaseLocks()
         super.onDestroy()
@@ -131,15 +142,15 @@ class BridgeService : Service(), MeshListener {
         meshState = state
         mqtt?.onBridgeState(state)
         updateNotification(state)
-        if (!state.startsWith("verbunden")) mqtt?.markAllOffline()
+        if (!state.startsWith("verbunden")) lights?.markAllOffline()
     }
 
     override fun onStatus(status: LightStatus) {
-        mqtt?.onStatus(status)
+        lights?.onStatus(status)
     }
 
     override fun onDeviceOffline(meshId: Int) {
-        mqtt?.onDeviceOffline(meshId)
+        lights?.setAvailable(meshId, false)
     }
 
     // ---------------------------------------------------------------- helpers

@@ -11,7 +11,6 @@ import org.eclipse.paho.client.mqttv3.MqttMessage
 import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence
 import org.json.JSONArray
 import org.json.JSONObject
-import kotlin.math.roundToInt
 
 /**
  * MQTT side of the bridge: Home Assistant discovery, state publishing and
@@ -20,6 +19,7 @@ import kotlin.math.roundToInt
 class MqttBridge(
     private val handler: Handler,
     private val mesh: MeshManager,
+    private val lights: LightController,
     private val version: String
 ) {
     companion object {
@@ -28,41 +28,22 @@ class MqttBridge(
         const val BRIDGE_STATE = "$BASE/bridge_state"
         const val LOG = "$BASE/log"
         const val CMD = "$BASE/cmd"
-        const val MIN_K = 2700
-        const val MAX_K = 6500
-
-        /** Same rounding/clamping as the HA AwoX integration. */
-        fun convert(value: Int, minFrom: Int, maxFrom: Int, minTo: Int, maxTo: Int): Int {
-            val normalized = (value - minFrom).toDouble() / (maxFrom - minFrom)
-            val v = (normalized * (maxTo - minTo) + minTo).roundToInt()
-            return v.coerceIn(minTo, maxTo)
-        }
-
-        fun deviceTempToKelvin(t: Int) = convert(0x7f - t.coerceIn(0, 0x7f), 0, 0x7f, MIN_K, MAX_K)
-        fun kelvinToDeviceTemp(k: Int) = 0x7f - convert(k, MIN_K, MAX_K, 0, 0x7f)
-    }
-
-    /** Last known (or optimistic) state per mesh id. */
-    private class LightState {
-        var on = false
-        var colorMode = false
-        var whiteBrightness = 0x7f
-        var temperature = 0x40
-        var colorBrightness = 0x64
-        var r = 255; var g = 255; var b = 255
-        var known = false
+        const val DEBUG = "$BASE/debug"
+        const val DEBUG_SET = "$BASE/debug/set"
     }
 
     private var client: MqttAsyncClient? = null
     private var devices: List<MeshDevice> = emptyList()
-    private val states = HashMap<Int, LightState>()
-    private val availability = HashMap<Int, Boolean>()
     private var bridgeState = "startet"
     private var running = false
 
     fun start(cfg: Config) {
         devices = cfg.devices
         running = true
+        lights.stateListeners.add { id, st -> publishState(id, st) }
+        lights.availabilityListeners.add { id, av ->
+            publish(deviceAvailTopic(id), if (av) "online" else "offline", retain = true)
+        }
         connect(cfg)
     }
 
@@ -146,15 +127,19 @@ class MqttBridge(
         try {
             c.subscribe("$BASE/light/+/set", 0)
             c.subscribe(CMD, 0)
+            c.subscribe(DEBUG_SET, 0)
         } catch (t: Throwable) {
             BridgeLog.e("MQTT-Subscribe fehlgeschlagen", t)
         }
         publish(AVAIL, "online", retain = true, qos = 1)
         publishDiscovery()
         publish(BRIDGE_STATE, bridgeState, retain = true)
+        publish(DEBUG, if (BridgeLog.verbose) "ON" else "OFF", retain = true)
+        val snap = lights.snapshot()
         for (d in devices) {
-            publish(deviceAvailTopic(d.meshId), if (availability[d.meshId] == true) "online" else "offline", retain = true)
-            states[d.meshId]?.takeIf { it.known }?.let { publishState(d.meshId, it) }
+            val st = snap[d.meshId]
+            publish(deviceAvailTopic(d.meshId), if (st?.available == true) "online" else "offline", retain = true)
+            st?.takeIf { it.known }?.let { publishState(d.meshId, it) }
         }
     }
 
@@ -203,7 +188,11 @@ class MqttBridge(
                 cfg.put("brightness", true).put("brightness_scale", 255)
             }
             if (d.hasTemperature) {
-                cfg.put("color_temp_kelvin", true).put("min_kelvin", MIN_K).put("max_kelvin", MAX_K)
+                cfg.put("color_temp_kelvin", true)
+                    .put("min_kelvin", LightController.MIN_K).put("max_kelvin", LightController.MAX_K)
+            }
+            if (d.hasColor) {
+                cfg.put("effect", true).put("effect_list", JSONArray(LightController.EFFECTS))
             }
             publish("homeassistant/light/eglo_bridge_$id/config", cfg.toString(), retain = true, qos = 1)
         }
@@ -224,6 +213,16 @@ class MqttBridge(
             .put("availability_topic", AVAIL)
             .put("icon", "mdi:text-box-outline")
             .put("entity_category", "diagnostic")
+            .put("device", bridgeDevice).toString(), retain = true, qos = 1)
+
+        publish("homeassistant/switch/eglo_bridge_debug/config", JSONObject()
+            .put("name", "Debug-Log")
+            .put("unique_id", "eglo_bridge_debug")
+            .put("command_topic", DEBUG_SET)
+            .put("state_topic", DEBUG)
+            .put("availability_topic", AVAIL)
+            .put("icon", "mdi:bug")
+            .put("entity_category", "config")
             .put("device", bridgeDevice).toString(), retain = true, qos = 1)
 
         publish("homeassistant/button/eglo_bridge_reconnect/config", JSONObject()
@@ -248,48 +247,22 @@ class MqttBridge(
         publish(LOG, line.take(250))
     }
 
-    fun onStatus(s: LightStatus) {
-        val st = states.getOrPut(s.meshId) { LightState() }
-        st.on = s.on
-        st.colorMode = s.colorMode
-        st.whiteBrightness = s.whiteBrightness
-        st.temperature = s.temperature
-        st.colorBrightness = s.colorBrightness
-        st.r = s.r; st.g = s.g; st.b = s.b
-        st.known = true
-        if (availability[s.meshId] != true) {
-            availability[s.meshId] = true
-            publish(deviceAvailTopic(s.meshId), "online", retain = true)
-        }
-        publishState(s.meshId, st)
-    }
-
-    fun onDeviceOffline(meshId: Int) {
-        if (availability[meshId] != false) {
-            availability[meshId] = false
-            publish(deviceAvailTopic(meshId), "offline", retain = true)
-        }
-    }
-
-    fun markAllOffline() {
-        for (d in devices) onDeviceOffline(d.meshId)
-    }
-
-    private fun publishState(id: Int, st: LightState) {
+    private fun publishState(id: Int, st: LightController.LightState) {
         val d = devices.firstOrNull { it.meshId == id } ?: return
         val o = JSONObject().put("state", if (st.on) "ON" else "OFF")
         if (st.colorMode && d.hasColor) {
             o.put("color_mode", "rgb")
-            o.put("brightness", convert(st.colorBrightness, 0x0a, 0x64, 0, 255))
+            o.put("brightness", st.brightness255)
             o.put("color", JSONObject().put("r", st.r).put("g", st.g).put("b", st.b))
         } else if (d.hasTemperature) {
             o.put("color_mode", "color_temp")
-            o.put("brightness", convert(st.whiteBrightness, 1, 0x7f, 0, 255))
-            o.put("color_temp", deviceTempToKelvin(st.temperature))
+            o.put("brightness", st.brightness255)
+            o.put("color_temp", st.kelvin)
         } else if (d.hasDimming || d.hasColor) {
             o.put("color_mode", "brightness")
-            o.put("brightness", convert(st.whiteBrightness, 1, 0x7f, 0, 255))
+            o.put("brightness", st.brightness255)
         }
+        if (d.hasColor) o.put("effect", st.effect)
         publish(stateTopic(id), o.toString(), retain = true)
     }
 
@@ -300,54 +273,18 @@ class MqttBridge(
             if (payload.trim() == "reconnect") mesh.reconnect()
             return
         }
+        if (topic == DEBUG_SET) {
+            BridgeLog.verbose = payload.trim().uppercase() == "ON"
+            BridgeLog.i("Debug-Log " + if (BridgeLog.verbose) "an" else "aus")
+            publish(DEBUG, if (BridgeLog.verbose) "ON" else "OFF", retain = true)
+            return
+        }
         val parts = topic.split('/')
         if (parts.size != 4 || parts[3] != "set") return
         val id = parts[2].toIntOrNull() ?: return
         val json = try { JSONObject(payload) } catch (_: Exception) {
             BridgeLog.w("Ungültiger Befehl: $payload"); return
         }
-        handleCommand(id, json)
-    }
-
-    private fun handleCommand(id: Int, root: JSONObject) {
-        BridgeLog.i("Befehl für $id: $root")
-        val st = states.getOrPut(id) { LightState() }
-        var stateSet = false
-
-        root.optJSONObject("color")?.let { c ->
-            val r = c.optInt("r", 255); val g = c.optInt("g", 255); val b = c.optInt("b", 255)
-            mesh.setColor(id, r, g, b)
-            st.r = r; st.g = g; st.b = b
-            st.colorMode = true; st.on = true; stateSet = true
-        }
-
-        if (root.has("brightness") && !root.has("color_temp") && (root.has("color") || st.colorMode)) {
-            val v = convert(root.getInt("brightness"), 0, 255, 0x0a, 0x64)
-            mesh.setColorBrightness(id, v)
-            st.colorBrightness = v; st.on = true; stateSet = true
-        } else if (root.has("brightness")) {
-            val v = convert(root.getInt("brightness"), 0, 255, 1, 0x7f)
-            mesh.setWhiteBrightness(id, v)
-            st.whiteBrightness = v; st.on = true; stateSet = true
-        }
-
-        if (root.has("color_temp")) {
-            val v = kelvinToDeviceTemp(root.getInt("color_temp"))
-            mesh.setWhiteTemperature(id, v)
-            st.temperature = v; st.colorMode = false; st.on = true; stateSet = true
-        }
-
-        when (root.optString("state").uppercase()) {
-            "ON" -> {
-                if (!stateSet) mesh.setPower(id, true)
-                st.on = true
-            }
-            "OFF" -> {
-                mesh.setPower(id, false)
-                st.on = false
-            }
-        }
-        st.known = true
-        publishState(id, st)
+        lights.command(id, json)
     }
 }

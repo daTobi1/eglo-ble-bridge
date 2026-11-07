@@ -14,6 +14,9 @@ object BridgeLog {
     private val fmt = SimpleDateFormat("HH:mm:ss", Locale.GERMANY)
     val listeners = CopyOnWriteArrayList<(String) -> Unit>()
 
+    /** Log every mesh packet (RX/TX). Toggled from the app or Home Assistant. */
+    @Volatile var verbose = false
+
     @Synchronized
     fun snapshot(): List<String> = lines.toList()
 

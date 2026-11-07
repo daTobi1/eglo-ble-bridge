@@ -7,19 +7,19 @@ class ConversionTest {
     @Test
     fun kelvinMapping() {
         // device scale: 0 = coolest (6500 K), 0x7f = warmest (2700 K)
-        assertEquals(0x7f, MqttBridge.kelvinToDeviceTemp(2700))
-        assertEquals(0, MqttBridge.kelvinToDeviceTemp(6500))
-        assertEquals(6500, MqttBridge.deviceTempToKelvin(0))
-        assertEquals(2700, MqttBridge.deviceTempToKelvin(0x7f))
-        val roundTrip = MqttBridge.deviceTempToKelvin(MqttBridge.kelvinToDeviceTemp(4000))
+        assertEquals(0x7f, LightController.kelvinToDeviceTemp(2700))
+        assertEquals(0, LightController.kelvinToDeviceTemp(6500))
+        assertEquals(6500, LightController.deviceTempToKelvin(0))
+        assertEquals(2700, LightController.deviceTempToKelvin(0x7f))
+        val roundTrip = LightController.deviceTempToKelvin(LightController.kelvinToDeviceTemp(4000))
         assertEquals(4000.0, roundTrip.toDouble(), 30.0)
     }
 
     @Test
     fun brightnessMapping() {
-        assertEquals(1, MqttBridge.convert(0, 0, 255, 1, 0x7f))
-        assertEquals(0x7f, MqttBridge.convert(255, 0, 255, 1, 0x7f))
-        assertEquals(255, MqttBridge.convert(0x64, 0x0a, 0x64, 0, 255))
+        assertEquals(1, LightController.convert(0, 0, 255, 1, 0x7f))
+        assertEquals(0x7f, LightController.convert(255, 0, 255, 1, 0x7f))
+        assertEquals(255, LightController.convert(0x64, 0x0a, 0x64, 0, 255))
     }
 
     @Test
