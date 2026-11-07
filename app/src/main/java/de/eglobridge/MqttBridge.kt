@@ -49,6 +49,15 @@ class MqttBridge(
 
         private const val RECOMPUTE_MS = 10000L
 
+        /** Per-lamp effect settings (key, HA name, icon, min). */
+        val LAMP_SETTINGS = listOf(
+            arrayOf("fire_speed", "Lagerfeuer-Tempo", "mdi:fire", "0"),
+            arrayOf("fire_strength", "Lagerfeuer-Stärke", "mdi:fire-alert", "0"),
+            arrayOf("fire_brightness", "Lagerfeuer-Helligkeit", "mdi:brightness-6", "5"),
+            arrayOf("effect_speed", "Effekt-Tempo", "mdi:speedometer", "0")
+        )
+        val LAMP_SETTING_KEYS = LAMP_SETTINGS.map { it[0] }
+
         fun slug(name: String): String {
             val s = name.lowercase()
                 .replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss")
@@ -96,6 +105,7 @@ class MqttBridge(
     @Volatile var speed = 50; private set
     private var lastSourceOptions = ""
     private val fireKnown = HashSet<String>()
+    private val lampKnown = HashSet<String>()
 
     val connected: Boolean get() = client?.isConnected == true
 
@@ -301,6 +311,21 @@ class MqttBridge(
                     .toString(), retain = true, qos = 1)
             }
             publish("homeassistant/light/eglo_bridge_$id/config", cfg.toString(), retain = true, qos = 1)
+            if (d.hasColor) {
+                for (ls in LAMP_SETTINGS) {
+                    publish("homeassistant/number/eglo_bridge_${id}_${ls[0]}/config", JSONObject()
+                        .put("name", ls[1])
+                        .put("unique_id", "eglo_bridge_${id}_${ls[0]}")
+                        .put("command_topic", "$BASE/light/$id/${ls[0]}/set")
+                        .put("state_topic", "$BASE/light/$id/${ls[0]}")
+                        .put("min", ls[3].toInt()).put("max", 100).put("step", 5)
+                        .put("unit_of_measurement", "%")
+                        .put("mode", "slider")
+                        .put("icon", ls[2])
+                        .put("device", JSONObject().put("identifiers", JSONArray().put("eglo_bridge_dev_$id")))
+                        .toString(), retain = true, qos = 1)
+                }
+            }
         }
 
         // ---- shared music / effect entities
@@ -546,9 +571,30 @@ class MqttBridge(
 
     private fun selected(id: Int) = selection[id] ?: true
 
+    /** Write a per-lamp setting for every colour lamp (used by the global sliders). */
+    private fun setAllLamps(key: String, value: Int) {
+        for (d in devices.filter { it.isLight && it.hasColor }) {
+            if (connected) publish("$BASE/light/${d.meshId}/$key", value.toString(), retain = true)
+            else applyLampSetting(d.meshId, key, value)
+        }
+    }
+
+    private fun applyLampSetting(id: Int, key: String, value: Int) {
+        lights.setLampSetting(id, key, value)
+        if (key == "effect_speed" && isOwner(id)) lights.applySequenceSpeed(listOf(id), value)
+    }
+
     private data class Quint(val a: String, val b: String, val c: String, val d: String, val e: Int)
 
     private fun ensureSelectionDefaults() {
+        // per-lamp setting defaults if nobody has set them yet
+        for (d in devices.filter { it.isLight && it.hasColor }) {
+            for (key in LAMP_SETTING_KEYS) {
+                if (!lampKnown.contains("${d.meshId}/$key")) {
+                    publish("$BASE/light/${d.meshId}/$key", lights.lampSetting(d.meshId, key).toString(), retain = true)
+                }
+            }
+        }
         // defaults for the campfire sliders if nobody has set them yet
         if (!fireKnown.contains(FIRE_SPEED)) publish(FIRE_SPEED, lights.fireSpeed.toString(), retain = true)
         if (!fireKnown.contains(FIRE_STRENGTH)) publish(FIRE_STRENGTH, lights.fireStrength.toString(), retain = true)
@@ -659,7 +705,11 @@ class MqttBridge(
             }
             SOURCE_NAME -> return
             "$FIRE_SPEED/set", "$FIRE_STRENGTH/set", "$FIRE_BRIGHT/set" -> {
-                v.toFloatOrNull()?.let { publish(topic.removeSuffix("/set"), it.toInt().coerceIn(0, 100).toString(), retain = true) }
+                val n = v.toFloatOrNull()?.toInt()?.coerceIn(0, 100) ?: return
+                val stateTopic = topic.removeSuffix("/set")
+                publish(stateTopic, n.toString(), retain = true)
+                // the global slider sets all lamps
+                setAllLamps(stateTopic.removePrefix("$BASE/"), n)
                 return
             }
             FIRE_SPEED, FIRE_STRENGTH, FIRE_BRIGHT -> {
@@ -677,14 +727,13 @@ class MqttBridge(
                 v.toFloatOrNull()?.let { sensitivityPct = it.toInt(); lights.musicSensitivity = it / 100f }
                 return
             }
-            SPEED_SET -> { v.toFloatOrNull()?.let { publish(SPEED, it.toInt().toString(), retain = true) }; return }
-            SPEED -> {
-                v.toFloatOrNull()?.let {
-                    speed = it.toInt()
-                    lights.applySequenceSpeed(ownedLights(), speed)
-                }
+            SPEED_SET -> {
+                val n = v.toFloatOrNull()?.toInt()?.coerceIn(0, 100) ?: return
+                publish(SPEED, n.toString(), retain = true)
+                setAllLamps("effect_speed", n)
                 return
             }
+            SPEED -> { v.toFloatOrNull()?.let { speed = it.toInt() }; return }
         }
 
         val parts = topic.split('/')
@@ -723,6 +772,15 @@ class MqttBridge(
             parts.size == 5 && parts[3] == "link" -> {
                 links.getOrPut(id) { ConcurrentHashMap() }[parts[4]] = v.toIntOrNull() ?: 0
                 if (parts[4] != bridgeId) recompute()
+            }
+            parts.size == 5 && parts[3] in LAMP_SETTING_KEYS && parts[4] == "set" -> {
+                val n = v.toFloatOrNull()?.toInt()?.coerceIn(0, 100) ?: return
+                publish("$BASE/light/$id/${parts[3]}", n.toString(), retain = true)
+            }
+            parts.size == 4 && parts[3] in LAMP_SETTING_KEYS -> {
+                val n = v.toFloatOrNull()?.toInt()?.coerceIn(0, 100) ?: return
+                lampKnown.add("$id/${parts[3]}")
+                applyLampSetting(id, parts[3], n)
             }
             parts.size == 5 && parts[3] == "music" && parts[4] == "set" ->
                 publish("$BASE/light/$id/music", if (v.uppercase() == "ON") "ON" else "OFF", retain = true)
@@ -763,17 +821,17 @@ class MqttBridge(
         if (connected) publish(SENS, pct.toString(), retain = true) else lights.musicSensitivity = pct / 100f
     }
     fun setSpeed(v: Int) {
-        if (connected) publish(SPEED, v.toString(), retain = true) else lights.applySequenceSpeed(ownedLights(), v)
+        if (connected) publish(SPEED_SET, v.toString()) else setAllLamps("effect_speed", v)
     }
     fun setFire(speed: Int? = null, strength: Int? = null, brightness: Int? = null) {
         if (connected) {
-            speed?.let { publish(FIRE_SPEED, it.toString(), retain = true) }
-            strength?.let { publish(FIRE_STRENGTH, it.toString(), retain = true) }
-            brightness?.let { publish(FIRE_BRIGHT, it.toString(), retain = true) }
+            speed?.let { publish("$FIRE_SPEED/set", it.toString()) }
+            strength?.let { publish("$FIRE_STRENGTH/set", it.toString()) }
+            brightness?.let { publish("$FIRE_BRIGHT/set", it.toString()) }
         } else {
-            speed?.let { lights.fireSpeed = it }
-            strength?.let { lights.fireStrength = it }
-            brightness?.let { lights.fireBrightness = it.coerceAtLeast(5) }
+            speed?.let { lights.fireSpeed = it; setAllLamps("fire_speed", it) }
+            strength?.let { lights.fireStrength = it; setAllLamps("fire_strength", it) }
+            brightness?.let { lights.fireBrightness = it.coerceAtLeast(5); setAllLamps("fire_brightness", it.coerceAtLeast(5)) }
         }
     }
 

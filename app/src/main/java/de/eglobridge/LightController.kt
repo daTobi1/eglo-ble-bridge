@@ -101,10 +101,24 @@ class LightController(
         var level: Double = 1.0
     )
 
-    /** Campfire settings, 0..100 each (shared via MQTT). */
+    /** Campfire defaults, 0..100 each (shared via MQTT); per-lamp values override them. */
     @Volatile var fireSpeed = 50
     @Volatile var fireStrength = 50
     @Volatile var fireBrightness = 100
+
+    /** Per-lamp effect settings: "fire_speed", "fire_strength", "fire_brightness", "effect_speed". */
+    private val lampSettings = java.util.concurrent.ConcurrentHashMap<Int, java.util.concurrent.ConcurrentHashMap<String, Int>>()
+
+    fun setLampSetting(id: Int, key: String, value: Int) {
+        lampSettings.getOrPut(id) { java.util.concurrent.ConcurrentHashMap() }[key] = value
+    }
+
+    fun lampSetting(id: Int, key: String): Int = lampSettings[id]?.get(key) ?: when (key) {
+        "fire_speed" -> fireSpeed
+        "fire_strength" -> fireStrength
+        "fire_brightness" -> fireBrightness
+        else -> 50
+    }
     private val fireTargets = LinkedHashMap<Int, Fire>()
     private val rnd = java.util.Random()
     private var fireIdx = 0
@@ -309,15 +323,16 @@ class LightController(
             val id = ids[fireIdx]
             val f = fireTargets[id]
             if (f != null && isAvailable(id)) stepFire(id, f, ids.size)
-            // tempo 0 -> 450 ms, 100 -> 150 ms per tick
-            val tick = (450 - fireSpeed.coerceIn(0, 100) * 3).toLong()
+            // tempo 0 -> 450 ms, 100 -> 150 ms per tick (fastest lamp decides)
+            val maxSpeed = ids.maxOf { lampSetting(it, "fire_speed") }
+            val tick = (450 - maxSpeed.coerceIn(0, 100) * 3).toLong()
             handler.postDelayed(this, if (ids.size > 1) tick else maxOf(tick, FIRE_TICK_MS))
         }
     }
 
     private fun stepFire(id: Int, f: Fire, lamps: Int) {
-        val strength = fireStrength.coerceIn(0, 100) / 100.0      // 0 = gentle glow, 1 = wild
-        val speedF = fireSpeed.coerceIn(0, 100) / 100.0
+        val strength = lampSetting(id, "fire_strength").coerceIn(0, 100) / 100.0   // 0 = gentle glow, 1 = wild
+        val speedF = lampSetting(id, "fire_speed").coerceIn(0, 100) / 100.0
         // new flame target now and then; occasional dips (gust) and sparks, scaled by strength
         val low = 1.0 - (0.15 + 0.6 * strength)                   // lowest normal flame
         val r = rnd.nextDouble()
@@ -334,7 +349,7 @@ class LightController(
         val hueTarget = 6.0 + f.heat * 32.0 + (rnd.nextDouble() - 0.5) * 6.0 * (0.3 + strength)
         f.hue += (hueTarget - f.hue) * 0.7
         val (cr, cg, cb) = hsvToRgb(f.hue.coerceIn(0.0, 50.0), 1.0, 1.0)
-        val cap = (fireBrightness.coerceIn(5, 100) / 100.0) * f.level
+        val cap = (lampSetting(id, "fire_brightness").coerceIn(5, 100) / 100.0) * f.level
         val bright = (0x0a + Math.pow(f.heat, 1.4) * cap * (0x64 - 0x0a)).toInt().coerceIn(0x0a, 0x64)
         mesh.setColor(id, cr, cg, cb, coalesce = true)
         mesh.setColorBrightness(id, bright, coalesce = true)
