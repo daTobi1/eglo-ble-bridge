@@ -85,6 +85,15 @@ class MqttBridge(
     @Volatile var onServiceCommand: ((String) -> Unit)? = null
     @Volatile var hasMicPermission: () -> Boolean = { true }
     private var micState = ""
+    private val screenTopic = "$bTopic/screen"
+    private val brightTopic = "$bTopic/brightness"
+    private val timeoutTopic = "$bTopic/screen_timeout"
+    private val urlTopic = "$bTopic/url"
+    private val batteryTopic = "$bTopic/battery"
+    private val chargingTopic = "$bTopic/charging"
+    private val kioskTopic = "$bTopic/kiosk"
+    private var config: Config? = null
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
     private var client: MqttAsyncClient? = null
     private var devices: List<MeshDevice> = emptyList()
@@ -112,6 +121,8 @@ class MqttBridge(
     // ================================================================= lifecycle
 
     fun start(cfg: Config) {
+        config = cfg
+        KioskControl.listeners.add(kioskListener)
         devices = cfg.devices
         running = true
         bridges[bridgeId] = BridgeInfo(bridgeName, true)
@@ -126,7 +137,10 @@ class MqttBridge(
         connect(cfg)
     }
 
+    private val kioskListener: () -> Unit = { handler.post { publishKiosk() } }
+
     fun stop() {
+        KioskControl.listeners.remove(kioskListener)
         running = false
         handler.removeCallbacks(recomputeRunnable)
         lights.stopMic()
@@ -217,9 +231,10 @@ class MqttBridge(
         try {
             c.subscribe(arrayOf(
                 "$BASE/bridge/+/status", "$BASE/bridge/+/info", cmdTopic, debugSet, updateInstall,
+                "$screenTopic/set", "$brightTopic/set", "$timeoutTopic/set", "$urlTopic/set",
                 "$BASE/light/#", "$BASE/music/#", SENS, SENS_SET, SPEED, SPEED_SET,
                 "$FIRE_SPEED/#", "$FIRE_STRENGTH/#", "$FIRE_BRIGHT/#"
-            ), IntArray(14))
+            ), IntArray(18))
         } catch (t: Throwable) {
             BridgeLog.e("MQTT-Subscribe fehlgeschlagen", t)
         }
@@ -229,6 +244,7 @@ class MqttBridge(
         publish(debugTopic, if (BridgeLog.verbose) "ON" else "OFF", retain = true)
         micState = ""
         updateMic()
+        publishKiosk()
         publishUpdate(inProgress = false)
         cleanupLegacyDiscovery()
         publishDiscovery()
@@ -430,6 +446,83 @@ class MqttBridge(
             .put("state_topic", micTopic)
             .put("availability_topic", avail)
             .put("icon", "mdi:microphone")
+            .put("entity_category", "diagnostic")
+            .put("device", bridgeDevice).toString(), retain = true, qos = 1)
+
+        // ---- kiosk (dashboard screen of this tablet)
+        publish("homeassistant/switch/eglo_bridge_${bridgeId}_screen/config", JSONObject()
+            .put("name", "Bildschirm")
+            .put("unique_id", "eglo_bridge_${bridgeId}_screen")
+            .put("command_topic", "$screenTopic/set")
+            .put("state_topic", screenTopic)
+            .put("availability_topic", avail)
+            .put("icon", "mdi:tablet-dashboard")
+            .put("device", bridgeDevice).toString(), retain = true, qos = 1)
+        publish("homeassistant/number/eglo_bridge_${bridgeId}_brightness/config", JSONObject()
+            .put("name", "Bildschirmhelligkeit")
+            .put("unique_id", "eglo_bridge_${bridgeId}_brightness")
+            .put("command_topic", "$brightTopic/set")
+            .put("state_topic", brightTopic)
+            .put("availability_topic", avail)
+            .put("min", 1).put("max", 100).put("step", 1)
+            .put("unit_of_measurement", "%")
+            .put("mode", "slider")
+            .put("icon", "mdi:brightness-6")
+            .put("device", bridgeDevice).toString(), retain = true, qos = 1)
+        publish("homeassistant/number/eglo_bridge_${bridgeId}_screen_timeout/config", JSONObject()
+            .put("name", "Bildschirm aus nach")
+            .put("unique_id", "eglo_bridge_${bridgeId}_screen_timeout")
+            .put("command_topic", "$timeoutTopic/set")
+            .put("state_topic", timeoutTopic)
+            .put("availability_topic", avail)
+            .put("min", 0).put("max", 120).put("step", 1)
+            .put("unit_of_measurement", "min")
+            .put("mode", "box")
+            .put("icon", "mdi:timer-outline")
+            .put("entity_category", "config")
+            .put("device", bridgeDevice).toString(), retain = true, qos = 1)
+        publish("homeassistant/text/eglo_bridge_${bridgeId}_url/config", JSONObject()
+            .put("name", "Dashboard-Adresse")
+            .put("unique_id", "eglo_bridge_${bridgeId}_url")
+            .put("command_topic", "$urlTopic/set")
+            .put("state_topic", urlTopic)
+            .put("availability_topic", avail)
+            .put("max", 255)
+            .put("icon", "mdi:web")
+            .put("entity_category", "config")
+            .put("device", bridgeDevice).toString(), retain = true, qos = 1)
+        publish("homeassistant/button/eglo_bridge_${bridgeId}_reload/config", JSONObject()
+            .put("name", "Dashboard neu laden")
+            .put("unique_id", "eglo_bridge_${bridgeId}_reload")
+            .put("command_topic", cmdTopic)
+            .put("payload_press", "reload")
+            .put("availability_topic", avail)
+            .put("icon", "mdi:refresh")
+            .put("device", bridgeDevice).toString(), retain = true, qos = 1)
+        publish("homeassistant/sensor/eglo_bridge_${bridgeId}_battery/config", JSONObject()
+            .put("name", "Akku")
+            .put("unique_id", "eglo_bridge_${bridgeId}_battery")
+            .put("state_topic", batteryTopic)
+            .put("availability_topic", avail)
+            .put("device_class", "battery")
+            .put("unit_of_measurement", "%")
+            .put("state_class", "measurement")
+            .put("entity_category", "diagnostic")
+            .put("device", bridgeDevice).toString(), retain = true, qos = 1)
+        publish("homeassistant/binary_sensor/eglo_bridge_${bridgeId}_charging/config", JSONObject()
+            .put("name", "Lädt")
+            .put("unique_id", "eglo_bridge_${bridgeId}_charging")
+            .put("state_topic", chargingTopic)
+            .put("availability_topic", avail)
+            .put("device_class", "battery_charging")
+            .put("entity_category", "diagnostic")
+            .put("device", bridgeDevice).toString(), retain = true, qos = 1)
+        publish("homeassistant/binary_sensor/eglo_bridge_${bridgeId}_kiosk/config", JSONObject()
+            .put("name", "Dashboard sichtbar")
+            .put("unique_id", "eglo_bridge_${bridgeId}_kiosk")
+            .put("state_topic", kioskTopic)
+            .put("availability_topic", avail)
+            .put("icon", "mdi:monitor-dashboard")
             .put("entity_category", "diagnostic")
             .put("device", bridgeDevice).toString(), retain = true, qos = 1)
 
@@ -650,6 +743,23 @@ class MqttBridge(
         publish(micTopic, s, retain = true)
     }
 
+    private fun publishKiosk() {
+        val c = config ?: return
+        publish(screenTopic, if (KioskControl.screenOn) "ON" else "OFF", retain = true)
+        publish(brightTopic, c.kioskBrightness.toString(), retain = true)
+        publish(timeoutTopic, c.kioskScreenTimeout.toString(), retain = true)
+        publish(urlTopic, c.kioskUrl, retain = true)
+        publish(kioskTopic, if (KioskControl.visible) "ON" else "OFF", retain = true)
+    }
+
+    fun publishBattery(percent: Int, charging: Boolean) {
+        publish(batteryTopic, percent.toString(), retain = true)
+        publish(chargingTopic, if (charging) "ON" else "OFF", retain = true)
+    }
+
+    /** Install request from the kiosk update dialog. */
+    fun requestInstallUpdate() = onServiceCommand?.invoke("install_update")
+
     /** State of the HA update entity for this tablet's app. */
     fun publishUpdate(inProgress: Boolean) {
         val latest = Updater.latest
@@ -679,7 +789,39 @@ class MqttBridge(
         val v = payload.trim()
         when (topic) {
             cmdTopic -> {
-                if (v == "reconnect") mesh.reconnect() else onServiceCommand?.invoke(v)
+                when (v) {
+                    "reconnect" -> mesh.reconnect()
+                    "reload" -> mainHandler.post { KioskControl.ui?.reload() }
+                    else -> onServiceCommand?.invoke(v)
+                }
+                return
+            }
+            "$screenTopic/set" -> {
+                val on = v.uppercase() == "ON"
+                mainHandler.post {
+                    val k = KioskControl.ui
+                    if (k != null) k.setScreen(on) else KioskControl.screenOn = on
+                }
+                return
+            }
+            "$brightTopic/set" -> {
+                val n = v.toFloatOrNull()?.toInt()?.coerceIn(1, 100) ?: return
+                config?.kioskBrightness = n
+                mainHandler.post { KioskControl.ui?.setBrightness(n) }
+                publishKiosk()
+                return
+            }
+            "$timeoutTopic/set" -> {
+                val n = v.toFloatOrNull()?.toInt()?.coerceIn(0, 120) ?: return
+                config?.kioskScreenTimeout = n
+                publishKiosk()
+                return
+            }
+            "$urlTopic/set" -> {
+                if (v.isEmpty()) return
+                config?.kioskUrl = v
+                mainHandler.post { KioskControl.ui?.loadUrl(v) }
+                publishKiosk()
                 return
             }
             updateInstall -> { onServiceCommand?.invoke("install_update"); return }

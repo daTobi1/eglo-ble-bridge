@@ -301,6 +301,53 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="20dp"
+            android:text="Kiosk-Modus (Dashboard im Vollbild)" />
+
+        <EditText
+            android:id="@+id/kioskUrl"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Dashboard-Adresse, z. B. http://192.168.178.120:8123/grundriss-2d"
+            android:inputType="textUri" />
+
+        <EditText
+            android:id="@+id/kioskPin"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="PIN zum Verlassen (5× oben links tippen)"
+            android:inputType="numberPassword" />
+
+        <CheckBox
+            android:id="@+id/kioskEnabled"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Kiosk-Modus beim Start" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btnKiosk"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Kiosk starten" />
+
+            <Button
+                android:id="@+id/btnHome"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Als Startbildschirm festlegen" />
+        </LinearLayout>
+
+        <TextView
+            style="@android:style/TextAppearance.Material.Title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
             android:text="3. Berechtigungen" />
 
         <LinearLayout

@@ -84,6 +84,24 @@ class Config(context: Context) {
         get() = p.getString("musicSelection", null)?.split(',')?.mapNotNull { it.trim().toIntOrNull() }?.toSet()
         set(v) = p.edit().putString("musicSelection", v?.joinToString(",")).apply()
 
+    // ---- kiosk
+    var kioskEnabled: Boolean
+        get() = p.getBoolean("kioskEnabled", false)
+        set(v) = p.edit().putBoolean("kioskEnabled", v).apply()
+    var kioskUrl: String
+        get() = p.getString("kioskUrl", null) ?: "http://$mqttHost:8123/"
+        set(v) = p.edit().putString("kioskUrl", v.trim()).apply()
+    var kioskPin: String
+        get() = p.getString("kioskPin", "1234")!!
+        set(v) = p.edit().putString("kioskPin", v.trim()).apply()
+    /** Minutes without touch until the screen goes dark; 0 = never. */
+    var kioskScreenTimeout: Int
+        get() = p.getInt("kioskScreenTimeout", 0)
+        set(v) = p.edit().putInt("kioskScreenTimeout", v).apply()
+    var kioskBrightness: Int
+        get() = p.getInt("kioskBrightness", 80)
+        set(v) = p.edit().putInt("kioskBrightness", v).apply()
+
     var enabled: Boolean
         get() = p.getBoolean("enabled", false)
         set(v) = p.edit().putBoolean("enabled", v).apply()

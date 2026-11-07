@@ -27,6 +27,7 @@ class MainActivity : Activity() {
 
     companion object {
         const val EXTRA_AUTOSTART = "autostart"
+        const val EXTRA_FROM_KIOSK = "from_kiosk"
     }
 
     private lateinit var cfg: Config
@@ -47,6 +48,9 @@ class MainActivity : Activity() {
     private val musicChecks = LinkedHashMap<Int, CheckBox>()
     private lateinit var musicSource: android.widget.Spinner
     private lateinit var bridgeName: EditText
+    private lateinit var kioskUrl: EditText
+    private lateinit var kioskPin: EditText
+    private lateinit var kioskEnabled: CheckBox
     private lateinit var fireSpeed: SeekBar
     private lateinit var fireStrength: SeekBar
     private lateinit var fireBrightness: SeekBar
@@ -174,6 +178,24 @@ class MainActivity : Activity() {
         fireBrightness.setOnSeekBarChangeListener(fireListener { BridgeService.hub?.setFire(brightness = it) })
         bridgeName = findViewById(R.id.bridgeName)
         bridgeName.setText(cfg.bridgeName)
+        kioskUrl = findViewById(R.id.kioskUrl)
+        kioskPin = findViewById(R.id.kioskPin)
+        kioskEnabled = findViewById(R.id.kioskEnabled)
+        kioskUrl.setText(cfg.kioskUrl)
+        kioskPin.setText(cfg.kioskPin)
+        kioskEnabled.isChecked = cfg.kioskEnabled
+        findViewById<Button>(R.id.btnKiosk).setOnClickListener {
+            saveFields()
+            startActivity(Intent(this, KioskActivity::class.java))
+            finish()
+        }
+        findViewById<Button>(R.id.btnHome).setOnClickListener {
+            saveFields()
+            try { startActivity(Intent(Settings.ACTION_HOME_SETTINGS)) } catch (_: Exception) {
+                // fallback: press home, Android asks which launcher to use
+                startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME))
+            }
+        }
         val debug = findViewById<CheckBox>(R.id.debugLog)
         debug.isChecked = cfg.debugLog
         debug.setOnCheckedChangeListener { _, checked ->
@@ -388,6 +410,9 @@ class MainActivity : Activity() {
         cfg.mqttPassword = mqttPassword.text.toString()
         val n = bridgeName.text.toString().trim()
         if (n.isNotEmpty()) cfg.bridgeName = n
+        kioskUrl.text.toString().trim().takeIf { it.isNotEmpty() }?.let { cfg.kioskUrl = it }
+        kioskPin.text.toString().trim().takeIf { it.isNotEmpty() }?.let { cfg.kioskPin = it }
+        cfg.kioskEnabled = kioskEnabled.isChecked
     }
 
     private fun importFromCloud() {
@@ -430,7 +455,10 @@ class MainActivity : Activity() {
         }
         cfg.enabled = true
         if (BridgeService.running) BridgeService.stop(this)
-        ui.postDelayed({ BridgeService.start(this) }, 800)
+        ui.postDelayed({
+            BridgeService.start(this)
+            if (cfg.kioskEnabled) { startActivity(Intent(this, KioskActivity::class.java)); finish() }
+        }, 800)
     }
 
     private fun hasLocation(): Boolean = Build.VERSION.SDK_INT < 23 ||

@@ -94,12 +94,32 @@ class BridgeService : Service(), MeshListener {
         m.start(cfg)
         handler.removeCallbacks(updateCheck)
         handler.postDelayed(updateCheck, 30 * 1000L)
+        handler.removeCallbacks(batteryCheck)
+        handler.postDelayed(batteryCheck, 5000L)
+    }
+
+    private val batteryCheck = object : Runnable {
+        override fun run() {
+            try {
+                val i = registerReceiver(null, android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+                if (i != null) {
+                    val level = i.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1)
+                    val scale = i.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, 100)
+                    val status = i.getIntExtra(android.os.BatteryManager.EXTRA_STATUS, -1)
+                    val charging = status == android.os.BatteryManager.BATTERY_STATUS_CHARGING ||
+                        status == android.os.BatteryManager.BATTERY_STATUS_FULL
+                    if (level >= 0) mqtt?.publishBattery(level * 100 / scale.coerceAtLeast(1), charging)
+                }
+            } catch (_: Throwable) { }
+            handler.postDelayed(this, 60 * 1000L)
+        }
     }
 
     /** Tear down mesh + MQTT (keeps the service and its thread alive). */
     private fun stopBridge() {
         BridgeLog.listeners.remove(logListener)
         handler.removeCallbacks(updateCheck)
+        handler.removeCallbacks(batteryCheck)
         controller = null
         hub = null
         lights?.shutdown()
@@ -163,6 +183,8 @@ class BridgeService : Service(), MeshListener {
                     if (info != null) {
                         BridgeLog.i("Update verfügbar: ${info.versionName} (Build ${info.versionCode})")
                         notifyUpdate(info)
+                        // in kiosk mode the update window appears on the dashboard
+                        android.os.Handler(android.os.Looper.getMainLooper()).post { KioskControl.ui?.showUpdate(info) }
                     }
                     handler.post { mqtt?.publishUpdate(inProgress = false) }
                 } catch (t: Throwable) {
