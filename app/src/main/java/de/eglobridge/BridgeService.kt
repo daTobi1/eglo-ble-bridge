@@ -82,11 +82,77 @@ class BridgeService : Service(), MeshListener {
         val name = cfg.bridgeName
         mqtt = MqttBridge(handler, m, lc, version, MqttBridge.slug(name), name).also {
             hub = it
+            it.onServiceCommand = { cmd -> handler.post { onServiceCommand(cmd) } }
+            it.hasMicPermission = {
+                Build.VERSION.SDK_INT < 23 ||
+                    checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
+                    android.content.pm.PackageManager.PERMISSION_GRANTED
+            }
             it.start(cfg)
         }
         BridgeLog.listeners.add(logListener)
         m.start(cfg)
-        handler.postDelayed(updateCheck, 60 * 1000L)
+        handler.removeCallbacks(updateCheck)
+        handler.postDelayed(updateCheck, 30 * 1000L)
+    }
+
+    /** Tear down mesh + MQTT (keeps the service and its thread alive). */
+    private fun stopBridge() {
+        BridgeLog.listeners.remove(logListener)
+        handler.removeCallbacks(updateCheck)
+        controller = null
+        hub = null
+        lights?.shutdown()
+        mesh?.stop()
+        lights?.markAllOffline()
+        mqtt?.stop()
+        mesh = null
+        mqtt = null
+        lights = null
+    }
+
+    /** Commands that arrive from Home Assistant (the tablets run in kiosk mode). */
+    private fun onServiceCommand(cmd: String) {
+        when (cmd) {
+            "restart" -> {
+                BridgeLog.i("Neustart der Bridge (aus Home Assistant)")
+                stopBridge()
+                // give the old MQTT session time to say goodbye before the new one says hello
+                handler.postDelayed({ if (mesh == null) startBridge() }, 4000)
+            }
+            "reimport" -> Thread {
+                val cfg = Config(this)
+                try {
+                    BridgeLog.i("Lampen werden neu aus der AwoX-Cloud importiert …")
+                    val r = AwoxCloud(cfg.awoxUser, cfg.awoxPassword).load()
+                    cfg.meshName = r.meshName
+                    cfg.meshPassword = r.meshPassword
+                    cfg.devices = r.devices
+                    BridgeLog.i("Import: ${r.devices.size} Geräte – Bridge startet neu")
+                    handler.post { onServiceCommand("restart") }
+                } catch (t: Throwable) {
+                    BridgeLog.e("Import fehlgeschlagen", t)
+                }
+            }.start()
+            "check_update" -> handler.post(updateCheck)
+            "install_update" -> Thread {
+                try {
+                    if (!Updater.canInstall(this)) {
+                        BridgeLog.e("Update: Installation aus dieser App ist auf dem Tablet nicht erlaubt " +
+                            "(einmalig in der App „Update installieren“ antippen und erlauben)")
+                        return@Thread
+                    }
+                    Updater.downloadAndInstall(this) { msg ->
+                        BridgeLog.i("Update: $msg")
+                        handler.post { mqtt?.publishUpdate(inProgress = true) }
+                    }
+                    BridgeLog.i("Update: bitte auf dem Tablet „Installieren“ bestätigen")
+                } catch (t: Throwable) {
+                    BridgeLog.e("Update-Download fehlgeschlagen", t)
+                    handler.post { mqtt?.publishUpdate(inProgress = false) }
+                }
+            }.start()
+        }
     }
 
     private val updateCheck = object : Runnable {
@@ -98,11 +164,13 @@ class BridgeService : Service(), MeshListener {
                         BridgeLog.i("Update verfügbar: ${info.versionName} (Build ${info.versionCode})")
                         notifyUpdate(info)
                     }
+                    handler.post { mqtt?.publishUpdate(inProgress = false) }
                 } catch (t: Throwable) {
                     BridgeLog.w("Update-Prüfung fehlgeschlagen: ${t.message}")
                 }
             }.start()
-            handler.postDelayed(this, 6 * 60 * 60 * 1000L)
+            handler.removeCallbacks(this)
+            handler.postDelayed(this, 30 * 60 * 1000L)
         }
     }
 
@@ -125,18 +193,8 @@ class BridgeService : Service(), MeshListener {
     override fun onDestroy() {
         running = false
         meshState = "gestoppt"
-        BridgeLog.listeners.remove(logListener)
-        handler.removeCallbacks(updateCheck)
         BridgeLog.i("Bridge gestoppt")
-        controller = null
-        hub = null
-        lights?.shutdown()
-        mesh?.stop()
-        lights?.markAllOffline()
-        mqtt?.stop()
-        mesh = null
-        mqtt = null
-        lights = null
+        stopBridge()
         handler.postDelayed({ thread.quitSafely() }, 1000)
         releaseLocks()
         super.onDestroy()

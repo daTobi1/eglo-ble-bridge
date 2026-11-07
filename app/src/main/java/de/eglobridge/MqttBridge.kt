@@ -68,6 +68,14 @@ class MqttBridge(
     private val cmdTopic = "$bTopic/cmd"
     private val debugTopic = "$bTopic/debug"
     private val debugSet = "$bTopic/debug/set"
+    private val updateTopic = "$bTopic/update"
+    private val updateInstall = "$bTopic/update/install"
+    private val micTopic = "$bTopic/mic"
+
+    /** Commands for the service: restart, reimport, check_update, install_update. */
+    @Volatile var onServiceCommand: ((String) -> Unit)? = null
+    @Volatile var hasMicPermission: () -> Boolean = { true }
+    private var micState = ""
 
     private var client: MqttAsyncClient? = null
     private var devices: List<MeshDevice> = emptyList()
@@ -198,10 +206,10 @@ class MqttBridge(
         lampAvail.clear()
         try {
             c.subscribe(arrayOf(
-                "$BASE/bridge/+/status", "$BASE/bridge/+/info", cmdTopic, debugSet,
+                "$BASE/bridge/+/status", "$BASE/bridge/+/info", cmdTopic, debugSet, updateInstall,
                 "$BASE/light/#", "$BASE/music/#", SENS, SENS_SET, SPEED, SPEED_SET,
                 "$FIRE_SPEED/#", "$FIRE_STRENGTH/#", "$FIRE_BRIGHT/#"
-            ), IntArray(13))
+            ), IntArray(14))
         } catch (t: Throwable) {
             BridgeLog.e("MQTT-Subscribe fehlgeschlagen", t)
         }
@@ -209,6 +217,9 @@ class MqttBridge(
         publish(info, JSONObject().put("name", bridgeName).put("version", version).toString(), retain = true, qos = 1)
         publish(stateText, bridgeState, retain = true)
         publish(debugTopic, if (BridgeLog.verbose) "ON" else "OFF", retain = true)
+        micState = ""
+        updateMic()
+        publishUpdate(inProgress = false)
         cleanupLegacyDiscovery()
         publishDiscovery()
         published.clear()  // force re-publish of link scores
@@ -364,6 +375,39 @@ class MqttBridge(
             .put("icon", "mdi:bug")
             .put("entity_category", "config")
             .put("device", bridgeDevice).toString(), retain = true, qos = 1)
+        for ((cmd, name, icon) in listOf(
+            Triple("restart", "Bridge neu starten", "mdi:restart-alert"),
+            Triple("reimport", "Lampen neu importieren", "mdi:cloud-download"),
+            Triple("check_update", "Nach Update suchen", "mdi:update")
+        )) {
+            publish("homeassistant/button/eglo_bridge_${bridgeId}_$cmd/config", JSONObject()
+                .put("name", name)
+                .put("unique_id", "eglo_bridge_${bridgeId}_$cmd")
+                .put("command_topic", cmdTopic)
+                .put("payload_press", cmd)
+                .put("availability_topic", avail)
+                .put("icon", icon)
+                .put("entity_category", "config")
+                .put("device", bridgeDevice).toString(), retain = true, qos = 1)
+        }
+        publish("homeassistant/update/eglo_bridge_${bridgeId}_update/config", JSONObject()
+            .put("name", "App-Update")
+            .put("unique_id", "eglo_bridge_${bridgeId}_update")
+            .put("state_topic", updateTopic)
+            .put("command_topic", updateInstall)
+            .put("payload_install", "install")
+            .put("availability_topic", avail)
+            .put("entity_category", "config")
+            .put("device", bridgeDevice).toString(), retain = true, qos = 1)
+        publish("homeassistant/sensor/eglo_bridge_${bridgeId}_mic/config", JSONObject()
+            .put("name", "Mikrofon")
+            .put("unique_id", "eglo_bridge_${bridgeId}_mic")
+            .put("state_topic", micTopic)
+            .put("availability_topic", avail)
+            .put("icon", "mdi:microphone")
+            .put("entity_category", "diagnostic")
+            .put("device", bridgeDevice).toString(), retain = true, qos = 1)
+
         publish("homeassistant/button/eglo_bridge_${bridgeId}_reconnect/config", JSONObject()
             .put("name", "Neu verbinden")
             .put("unique_id", "eglo_bridge_${bridgeId}_reconnect")
@@ -538,10 +582,39 @@ class MqttBridge(
     private fun updateMic() {
         val shouldListen = musicOn && effectiveSource() == bridgeId
         if (shouldListen && !lights.micRunning) {
-            if (!lights.startMic()) BridgeLog.w("Mikrofon konnte nicht gestartet werden – Berechtigung in der App erteilen")
+            if (!lights.startMic()) {
+                BridgeLog.w("Mikrofon konnte nicht gestartet werden – Berechtigung in der App erteilen")
+                setMicState(if (hasMicPermission()) "kein Zugriff (Bridge neu starten, während die App offen ist)"
+                    else "keine Berechtigung")
+                return
+            }
         } else if (!shouldListen && lights.micRunning) {
             lights.stopMic()
         }
+        setMicState(when {
+            lights.micRunning -> "hört zu"
+            !hasMicPermission() -> "keine Berechtigung"
+            else -> "bereit"
+        })
+    }
+
+    private fun setMicState(s: String) {
+        if (s == micState) return
+        micState = s
+        publish(micTopic, s, retain = true)
+    }
+
+    /** State of the HA update entity for this tablet's app. */
+    fun publishUpdate(inProgress: Boolean) {
+        val latest = Updater.latest
+        val o = JSONObject()
+            .put("installed_version", version)
+            .put("latest_version", latest?.versionName ?: version)
+            .put("title", "EGLO Bridge App")
+            .put("release_url", "https://github.com/daTobi1/eglo-ble-bridge/releases/tag/latest")
+            .put("in_progress", inProgress)
+        latest?.notes?.takeIf { it.isNotBlank() }?.let { o.put("release_summary", it.take(255)) }
+        publish(updateTopic, o.toString(), retain = true)
     }
 
     private fun onFrame(payload: String) {
@@ -559,7 +632,11 @@ class MqttBridge(
     private fun onMessage(topic: String, payload: String) {
         val v = payload.trim()
         when (topic) {
-            cmdTopic -> { if (v == "reconnect") mesh.reconnect(); return }
+            cmdTopic -> {
+                if (v == "reconnect") mesh.reconnect() else onServiceCommand?.invoke(v)
+                return
+            }
+            updateInstall -> { onServiceCommand?.invoke("install_update"); return }
             debugSet -> {
                 BridgeLog.verbose = v.uppercase() == "ON"
                 BridgeLog.i("Debug-Log " + if (BridgeLog.verbose) "an" else "aus")

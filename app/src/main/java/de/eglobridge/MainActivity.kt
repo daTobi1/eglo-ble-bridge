@@ -95,6 +95,22 @@ class MainActivity : Activity() {
         }
         findViewById<Button>(R.id.btnPerms).setOnClickListener { requestPerms() }
         findViewById<Button>(R.id.btnBattery).setOnClickListener { requestBatteryExemption() }
+        findViewById<Button>(R.id.btnMic).setOnClickListener {
+            if (Build.VERSION.SDK_INT >= 23 &&
+                checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED
+            ) requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 2)
+            else Toast.makeText(this, "Mikrofon ist erlaubt", Toast.LENGTH_SHORT).show()
+        }
+        findViewById<Button>(R.id.btnOverlay).setOnClickListener {
+            if (Build.VERSION.SDK_INT >= 23 && !Settings.canDrawOverlays(this)) {
+                startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+            } else Toast.makeText(this, "Einblenden ist erlaubt", Toast.LENGTH_SHORT).show()
+        }
+        findViewById<Button>(R.id.btnInstallPerm).setOnClickListener {
+            if (Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) {
+                startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+            } else Toast.makeText(this, "Installieren ist erlaubt", Toast.LENGTH_SHORT).show()
+        }
         findViewById<Button>(R.id.btnCopyLog).setOnClickListener {
             val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             cm.setPrimaryClip(ClipData.newPlainText("EGLO Bridge Log", BridgeLog.snapshot().joinToString("\n")))
@@ -429,8 +445,7 @@ class MainActivity : Activity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == 1 && hasLocation()) requestPerms()
         if (requestCode == 2 && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
-            Toast.makeText(this, "Mikrofon erlaubt – jetzt Musikmodus starten",
-                Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Mikrofon erlaubt", Toast.LENGTH_LONG).show()
         }
     }
 
