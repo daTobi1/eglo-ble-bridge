@@ -74,6 +74,11 @@ class Config(context: Context) {
         get() = p.getFloat("musicSensitivity", 1.0f)
         set(v) = p.edit().putFloat("musicSensitivity", v).apply()
 
+    /** Mesh ids taking part in the music mode; null = all lamps. */
+    var musicSelection: Set<Int>?
+        get() = p.getString("musicSelection", null)?.split(',')?.mapNotNull { it.trim().toIntOrNull() }?.toSet()
+        set(v) = p.edit().putString("musicSelection", v?.joinToString(",")).apply()
+
     var enabled: Boolean
         get() = p.getBoolean("enabled", false)
         set(v) = p.edit().putBoolean("enabled", v).apply()

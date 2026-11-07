@@ -69,11 +69,22 @@
                 android:textStyle="bold"
                 android:text="Musikmodus (Mikrofon des Tablets)" />
 
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Diese Lampen machen mit:" />
+
+            <LinearLayout
+                android:id="@+id/musicLamps"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical" />
+
             <Button
                 android:id="@+id/btnMusic"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Musikmodus für alle Lampen starten" />
+                android:text="Musikmodus starten" />
 
             <TextView
                 android:layout_width="match_parent"

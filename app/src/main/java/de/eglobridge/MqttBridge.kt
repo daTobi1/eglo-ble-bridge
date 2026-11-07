@@ -136,6 +136,7 @@ class MqttBridge(
             c.subscribe(CMD, 0)
             c.subscribe(DEBUG_SET, 0)
             c.subscribe(MUSIC_SET, 0)
+            c.subscribe("$BASE/light/+/music/set", 0)
             c.subscribe(SENS_SET, 0)
             c.subscribe(SPEED_SET, 0)
         } catch (t: Throwable) {
@@ -204,6 +205,17 @@ class MqttBridge(
             }
             if (d.hasColor) {
                 cfg.put("effect", true).put("effect_list", JSONArray(LightController.EFFECTS))
+                // per lamp: take part in the music mode
+                publish("homeassistant/switch/eglo_bridge_music_$id/config", JSONObject()
+                    .put("name", "Bei Musikmodus dabei")
+                    .put("unique_id", "eglo_bridge_music_$id")
+                    .put("command_topic", "$BASE/light/$id/music/set")
+                    .put("state_topic", "$BASE/light/$id/music")
+                    .put("availability_topic", AVAIL)
+                    .put("icon", "mdi:music-circle")
+                    .put("entity_category", "config")
+                    .put("device", JSONObject().put("identifiers", JSONArray().put("eglo_bridge_dev_$id")))
+                    .toString(), retain = true, qos = 1)
             }
             publish("homeassistant/light/eglo_bridge_$id/config", cfg.toString(), retain = true, qos = 1)
         }
@@ -295,6 +307,9 @@ class MqttBridge(
         publish(MUSIC, if (lights.musicActive) "ON" else "OFF", retain = true)
         publish(SENS, (lights.musicSensitivity * 100).toInt().toString(), retain = true)
         publish(SPEED, lights.sequenceSpeed.toString(), retain = true)
+        for (d in devices.filter { it.isLight && it.hasColor }) {
+            publish("$BASE/light/${d.meshId}/music", if (lights.musicSelected(d.meshId)) "ON" else "OFF", retain = true)
+        }
     }
 
     private fun publishState(id: Int, st: LightController.LightState) {
@@ -346,6 +361,11 @@ class MqttBridge(
             }
         }
         val parts = topic.split('/')
+        if (parts.size == 5 && parts[3] == "music" && parts[4] == "set") {
+            val id = parts[2].toIntOrNull() ?: return
+            lights.setMusicSelected(id, payload.trim().uppercase() == "ON")
+            return
+        }
         if (parts.size != 4 || parts[3] != "set") return
         val id = parts[2].toIntOrNull() ?: return
         val json = try { JSONObject(payload) } catch (_: Exception) {

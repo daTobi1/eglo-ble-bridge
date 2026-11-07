@@ -59,6 +59,38 @@ class LightController(
     /** Called whenever music mode / tempo / sensitivity changed (for MQTT state). */
     val settingsListeners = CopyOnWriteArrayList<() -> Unit>()
 
+    /** Lamps that take part when the music mode is started for "all" (selection). */
+    private val musicSelection = HashSet<Int>()
+
+    fun initMusicSelection(sel: Set<Int>?) {
+        musicSelection.clear()
+        musicSelection.addAll(sel ?: lights.map { it.meshId })
+    }
+
+    fun musicSelected(id: Int) = synchronized(musicSelection) { musicSelection.contains(id) }
+    fun musicSelectionSnapshot(): Set<Int> = synchronized(musicSelection) { musicSelection.toSet() }
+
+    /** Select / deselect a lamp for the music mode; applies immediately while music is running. */
+    fun setMusicSelected(id: Int, selected: Boolean) {
+        handler.post {
+            val changed = synchronized(musicSelection) {
+                if (selected) musicSelection.add(id) else musicSelection.remove(id)
+            }
+            if (!changed) return@post
+            BridgeLog.i("Musikmodus: ${mesh.deviceName(id)} ${if (selected) "ausgewählt" else "abgewählt"}")
+            if (musicTargets.isNotEmpty()) {
+                if (selected && isAvailable(id)) {
+                    command(id, JSONObject().put("state", "ON").put("effect", EFFECT_MUSIC))
+                } else if (!selected && musicTargets.contains(id)) {
+                    stopMusicFor(id)
+                    // back to the previous static light
+                    command(id, JSONObject().put("effect", EFFECT_NONE))
+                }
+            }
+            settingsListeners.forEach { it() }
+        }
+    }
+
     /** Colour-sequence tempo 0 (slow) .. 100 (fast). */
     @Volatile var sequenceSpeed = 50
         private set
@@ -249,11 +281,11 @@ class LightController(
         settingsListeners.forEach { it() }
     }
 
-    /** Music mode on all reachable lamps. */
+    /** Music mode on all selected and reachable lamps. */
     fun startMusicAll(): Boolean {
-        val targets = lights.filter { isAvailable(it.meshId) }
+        val targets = lights.filter { musicSelected(it.meshId) && isAvailable(it.meshId) }
         if (targets.isEmpty()) {
-            BridgeLog.w("Musikmodus: keine Lampe erreichbar")
+            BridgeLog.w("Musikmodus: keine ausgewählte Lampe erreichbar")
             return false
         }
         targets.forEach { command(it.meshId, JSONObject().put("state", "ON").put("effect", EFFECT_MUSIC)) }

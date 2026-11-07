@@ -40,6 +40,7 @@ class MainActivity : Activity() {
     private lateinit var lampsBox: LinearLayout
     private lateinit var btnMusic: Button
     private val lampPanels = LinkedHashMap<Int, LampPanel>()
+    private val musicChecks = LinkedHashMap<Int, CheckBox>()
     private var updateBusy = false
     private var updateMsg = ""
 
@@ -161,6 +162,26 @@ class MainActivity : Activity() {
             lampPanels[d.meshId] = panel
             lampsBox.addView(panel)
         }
+        val box = findViewById<LinearLayout>(R.id.musicLamps)
+        box.removeAllViews()
+        musicChecks.clear()
+        val saved = cfg.musicSelection
+        for (d in lights.filter { it.hasColor }) {
+            val cb = CheckBox(this)
+            cb.text = d.name.trim()
+            cb.isChecked = saved?.contains(d.meshId) ?: true
+            cb.setOnCheckedChangeListener { _, checked ->
+                val c = BridgeService.controller
+                if (c != null) c.setMusicSelected(d.meshId, checked)
+                else {
+                    val sel = (cfg.musicSelection ?: lights.map { it.meshId }.toSet()).toMutableSet()
+                    if (checked) sel.add(d.meshId) else sel.remove(d.meshId)
+                    cfg.musicSelection = sel
+                }
+            }
+            musicChecks[d.meshId] = cb
+            box.addView(cb)
+        }
     }
 
     private fun refreshLamps() {
@@ -168,7 +189,18 @@ class MainActivity : Activity() {
         val snap = c?.snapshot() ?: emptyMap()
         for ((id, panel) in lampPanels) panel.update(snap[id])
         val musicOn = c?.musicActive == true
-        val label = if (musicOn) "Musikmodus stoppen" else "Musikmodus für alle Lampen starten"
+        if (c != null) {
+            for ((id, cb) in musicChecks) {
+                val sel = c.musicSelected(id)
+                if (cb.isChecked != sel) {
+                    // reflect changes made in Home Assistant without re-triggering the listener
+                    cb.setOnCheckedChangeListener(null)
+                    cb.isChecked = sel
+                    cb.setOnCheckedChangeListener { _, checked -> BridgeService.controller?.setMusicSelected(id, checked) }
+                }
+            }
+        }
+        val label = if (musicOn) "Musikmodus stoppen" else "Musikmodus starten"
         if (btnMusic.text.toString() != label) btnMusic.text = label
     }
 
@@ -184,8 +216,8 @@ class MainActivity : Activity() {
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 2)
             return
         }
-        if (c.lights.none { c.isAvailable(it.meshId) }) {
-            Toast.makeText(this, "Keine Lampe erreichbar", Toast.LENGTH_LONG).show(); return
+        if (c.lights.none { c.musicSelected(it.meshId) && c.isAvailable(it.meshId) }) {
+            Toast.makeText(this, "Keine ausgewählte Lampe erreichbar", Toast.LENGTH_LONG).show(); return
         }
         c.startMusicAll()
     }
