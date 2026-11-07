@@ -122,6 +122,54 @@
                 android:progress="50" />
         </LinearLayout>
 
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:background="#FBE9E7"
+            android:orientation="vertical"
+            android:padding="12dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textStyle="bold"
+                android:text="Lagerfeuer-Effekt" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Tempo (langsam ↔ schnell)" />
+
+            <SeekBar
+                android:id="@+id/fireSpeed"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="100" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Stärke (sanftes Glimmen ↔ wildes Lodern)" />
+
+            <SeekBar
+                android:id="@+id/fireStrength"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="100" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Helligkeit" />
+
+            <SeekBar
+                android:id="@+id/fireBrightness"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="100" />
+        </LinearLayout>
+
         <CheckBox
             android:id="@+id/debugLog"
             android:layout_width="wrap_content"

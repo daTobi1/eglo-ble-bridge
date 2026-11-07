@@ -43,6 +43,9 @@ class MqttBridge(
         const val SENS_SET = "$BASE/music_sensitivity/set"
         const val SPEED = "$BASE/effect_speed"
         const val SPEED_SET = "$BASE/effect_speed/set"
+        const val FIRE_SPEED = "$BASE/fire_speed"
+        const val FIRE_STRENGTH = "$BASE/fire_strength"
+        const val FIRE_BRIGHT = "$BASE/fire_brightness"
 
         private const val RECOMPUTE_MS = 10000L
 
@@ -84,6 +87,7 @@ class MqttBridge(
     @Volatile var sensitivityPct = 100; private set
     @Volatile var speed = 50; private set
     private var lastSourceOptions = ""
+    private val fireKnown = HashSet<String>()
 
     val connected: Boolean get() = client?.isConnected == true
 
@@ -195,8 +199,9 @@ class MqttBridge(
         try {
             c.subscribe(arrayOf(
                 "$BASE/bridge/+/status", "$BASE/bridge/+/info", cmdTopic, debugSet,
-                "$BASE/light/#", "$BASE/music/#", SENS, SENS_SET, SPEED, SPEED_SET
-            ), intArrayOf(0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+                "$BASE/light/#", "$BASE/music/#", SENS, SENS_SET, SPEED, SPEED_SET,
+                "$FIRE_SPEED/#", "$FIRE_STRENGTH/#", "$FIRE_BRIGHT/#"
+            ), IntArray(13))
         } catch (t: Throwable) {
             BridgeLog.e("MQTT-Subscribe fehlgeschlagen", t)
         }
@@ -315,6 +320,22 @@ class MqttBridge(
             .put("mode", "slider")
             .put("icon", "mdi:speedometer")
             .put("device", globalDevice).toString(), retain = true, qos = 1)
+        for ((topic, uid, name, icon, min) in listOf(
+            Quint(FIRE_SPEED, "eglo_bridge_fire_speed", "Lagerfeuer-Tempo", "mdi:fire", 0),
+            Quint(FIRE_STRENGTH, "eglo_bridge_fire_strength", "Lagerfeuer-Stärke", "mdi:fire-alert", 0),
+            Quint(FIRE_BRIGHT, "eglo_bridge_fire_brightness", "Lagerfeuer-Helligkeit", "mdi:brightness-6", 5)
+        )) {
+            publish("homeassistant/number/$uid/config", JSONObject()
+                .put("name", name)
+                .put("unique_id", uid)
+                .put("command_topic", "$topic/set")
+                .put("state_topic", topic)
+                .put("min", min).put("max", 100).put("step", 5)
+                .put("unit_of_measurement", "%")
+                .put("mode", "slider")
+                .put("icon", icon)
+                .put("device", globalDevice).toString(), retain = true, qos = 1)
+        }
         publishSourceSelect(force = true)
 
         // ---- per-bridge entities
@@ -481,7 +502,13 @@ class MqttBridge(
 
     private fun selected(id: Int) = selection[id] ?: true
 
+    private data class Quint(val a: String, val b: String, val c: String, val d: String, val e: Int)
+
     private fun ensureSelectionDefaults() {
+        // defaults for the campfire sliders if nobody has set them yet
+        if (!fireKnown.contains(FIRE_SPEED)) publish(FIRE_SPEED, lights.fireSpeed.toString(), retain = true)
+        if (!fireKnown.contains(FIRE_STRENGTH)) publish(FIRE_STRENGTH, lights.fireStrength.toString(), retain = true)
+        if (!fireKnown.contains(FIRE_BRIGHT)) publish(FIRE_BRIGHT, lights.fireBrightness.toString(), retain = true)
         for (d in devices.filter { it.isLight && it.hasColor }) {
             if (!selection.containsKey(d.meshId)) publish("$BASE/light/${d.meshId}/music", "ON", retain = true)
         }
@@ -554,6 +581,20 @@ class MqttBridge(
                 return
             }
             SOURCE_NAME -> return
+            "$FIRE_SPEED/set", "$FIRE_STRENGTH/set", "$FIRE_BRIGHT/set" -> {
+                v.toFloatOrNull()?.let { publish(topic.removeSuffix("/set"), it.toInt().coerceIn(0, 100).toString(), retain = true) }
+                return
+            }
+            FIRE_SPEED, FIRE_STRENGTH, FIRE_BRIGHT -> {
+                val n = v.toFloatOrNull()?.toInt()?.coerceIn(0, 100) ?: return
+                fireKnown.add(topic)
+                when (topic) {
+                    FIRE_SPEED -> lights.fireSpeed = n
+                    FIRE_STRENGTH -> lights.fireStrength = n
+                    else -> lights.fireBrightness = n.coerceAtLeast(5)
+                }
+                return
+            }
             SENS_SET -> { v.toFloatOrNull()?.let { publish(SENS, it.toInt().toString(), retain = true) }; return }
             SENS -> {
                 v.toFloatOrNull()?.let { sensitivityPct = it.toInt(); lights.musicSensitivity = it / 100f }
@@ -647,6 +688,18 @@ class MqttBridge(
     fun setSpeed(v: Int) {
         if (connected) publish(SPEED, v.toString(), retain = true) else lights.applySequenceSpeed(ownedLights(), v)
     }
+    fun setFire(speed: Int? = null, strength: Int? = null, brightness: Int? = null) {
+        if (connected) {
+            speed?.let { publish(FIRE_SPEED, it.toString(), retain = true) }
+            strength?.let { publish(FIRE_STRENGTH, it.toString(), retain = true) }
+            brightness?.let { publish(FIRE_BRIGHT, it.toString(), retain = true) }
+        } else {
+            speed?.let { lights.fireSpeed = it }
+            strength?.let { lights.fireStrength = it }
+            brightness?.let { lights.fireBrightness = it.coerceAtLeast(5) }
+        }
+    }
+
     fun musicSourceName(): String = bridges[effectiveSource()]?.name ?: effectiveSource()
     fun bridgeNames(): List<String> = bridges.values.map { it.name }.distinct().sorted()
     fun setMusicSource(name: String) {

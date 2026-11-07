@@ -43,6 +43,10 @@ class MainActivity : Activity() {
     private val musicChecks = LinkedHashMap<Int, CheckBox>()
     private lateinit var musicSource: android.widget.Spinner
     private lateinit var bridgeName: EditText
+    private lateinit var fireSpeed: SeekBar
+    private lateinit var fireStrength: SeekBar
+    private lateinit var fireBrightness: SeekBar
+    private var fireTouched = 0L
     private var sourceNames: List<String> = emptyList()
     private var updateBusy = false
     private var promptedFor = -1
@@ -128,6 +132,17 @@ class MainActivity : Activity() {
             }
             override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
         }
+        fireSpeed = findViewById(R.id.fireSpeed)
+        fireStrength = findViewById(R.id.fireStrength)
+        fireBrightness = findViewById(R.id.fireBrightness)
+        fun fireListener(apply: (Int) -> Unit) = object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar, p: Int, fromUser: Boolean) {}
+            override fun onStartTrackingTouch(sb: SeekBar) { fireTouched = System.currentTimeMillis() }
+            override fun onStopTrackingTouch(sb: SeekBar) { fireTouched = System.currentTimeMillis(); apply(sb.progress) }
+        }
+        fireSpeed.setOnSeekBarChangeListener(fireListener { BridgeService.hub?.setFire(speed = it) })
+        fireStrength.setOnSeekBarChangeListener(fireListener { BridgeService.hub?.setFire(strength = it) })
+        fireBrightness.setOnSeekBarChangeListener(fireListener { BridgeService.hub?.setFire(brightness = it) })
         bridgeName = findViewById(R.id.bridgeName)
         bridgeName.setText(cfg.bridgeName)
         val debug = findViewById<CheckBox>(R.id.debugLog)
@@ -213,6 +228,13 @@ class MainActivity : Activity() {
             }
             val idx = names.indexOf(hub.musicSourceName())
             if (idx >= 0 && musicSource.selectedItemPosition != idx) musicSource.setSelection(idx, false)
+        }
+        // reflect campfire settings (also when changed in Home Assistant)
+        val lc = BridgeService.controller
+        if (lc != null && System.currentTimeMillis() - fireTouched > 3000) {
+            if (fireSpeed.progress != lc.fireSpeed) fireSpeed.progress = lc.fireSpeed
+            if (fireStrength.progress != lc.fireStrength) fireStrength.progress = lc.fireStrength
+            if (fireBrightness.progress != lc.fireBrightness) fireBrightness.progress = lc.fireBrightness
         }
         val label = if (hub?.musicActive == true) "Musikmodus stoppen" else "Musikmodus starten"
         if (btnMusic.text.toString() != label) btnMusic.text = label
