@@ -96,7 +96,11 @@ class Config(context: Context) {
         set(v) = p.edit().putBoolean("kioskEnabled", v).apply()
     var kioskUrl: String
         get() = p.getString("kioskUrl", null) ?: "http://$mqttHost:8123/"
-        set(v) = p.edit().putString("kioskUrl", v.trim()).apply()
+        set(v) {
+            val t = v.trim()
+            val fixed = if (t.isEmpty() || t.contains("://")) t else "http://$t"
+            p.edit().putString("kioskUrl", fixed).apply()
+        }
     var kioskPin: String
         get() = p.getString("kioskPin", "1234")!!
         set(v) = p.edit().putString("kioskPin", v.trim()).apply()
