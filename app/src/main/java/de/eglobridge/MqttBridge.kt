@@ -190,6 +190,8 @@ class MqttBridge(
     private fun onConnected(reconnect: Boolean) {
         BridgeLog.i(if (reconnect) "MQTT wieder verbunden" else "MQTT verbunden")
         val c = client ?: return
+        // what we believed while offline is not on the broker: re-learn from retained messages
+        lampAvail.clear()
         try {
             c.subscribe(arrayOf(
                 "$BASE/bridge/+/status", "$BASE/bridge/+/info", cmdTopic, debugSet,
