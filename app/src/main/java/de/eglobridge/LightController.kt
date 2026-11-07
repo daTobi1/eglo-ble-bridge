@@ -99,6 +99,7 @@ class LightController(
     private val fireTargets = LinkedHashMap<Int, Fire>()
     private val rnd = java.util.Random()
     private var fireIdx = 0
+    private var fireRunning = false
 
     // music mode
     private val musicTargets = HashSet<Int>()
@@ -251,7 +252,7 @@ class LightController(
                 musicTargets.remove(id)
                 if (!fireTargets.containsKey(id)) fireTargets[id] = Fire()
                 st.effect = effect; st.colorMode = true
-                if (fireTargets.size == 1) handler.post(fireRunnable)
+                if (!fireRunning) { fireRunning = true; handler.post(fireRunnable) }
             }
             effect == EFFECT_MUSIC -> {
                 fireTargets.remove(id)
@@ -287,7 +288,7 @@ class LightController(
 
     private val fireRunnable = object : Runnable {
         override fun run() {
-            if (fireTargets.isEmpty()) return
+            if (fireTargets.isEmpty()) { fireRunning = false; return }
             // update one lamp per tick (round robin) so the BLE link is not flooded
             val ids = fireTargets.keys.toList()
             fireIdx = (fireIdx + 1) % ids.size
