@@ -190,6 +190,7 @@ class MainActivity : Activity() {
         kioskPin.setText(cfg.kioskPin)
         kioskEnabled.isChecked = cfg.kioskEnabled
         findViewById<Button>(R.id.btnKiosk).setOnClickListener {
+            kioskEnabled.isChecked = true
             saveFields()
             startActivity(Intent(this, KioskActivity::class.java))
             finish()

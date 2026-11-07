@@ -38,7 +38,7 @@ import android.widget.Toast
  * Fullscreen Home Assistant dashboard. Registered as a launcher (HOME) so the tablet
  * always comes back here. No lock-task pinning on purpose: the system installer
  * window for app updates must be able to appear on top.
- * Hidden exit: tap the top-left corner 5 times, then enter the PIN.
+ * Exit: the gear button bottom-left (or 5 taps top-left), then the PIN.
  */
 class KioskActivity : Activity(), KioskControl.Ui {
 
@@ -59,6 +59,12 @@ class KioskActivity : Activity(), KioskControl.Ui {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         cfg = Config(this)
+        if (!cfg.kioskEnabled) {
+            // kiosk was switched off but we are still registered as launcher: hand over to the normal one
+            openOtherLauncher()
+            finish()
+            return
+        }
         // the bridge runs in the background; starting it from here (foreground) also allows the microphone
         if (cfg.enabled && cfg.isComplete && !BridgeService.running) BridgeService.start(this)
 
@@ -84,6 +90,23 @@ class KioskActivity : Activity(), KioskControl.Ui {
 
         // black overlay used as "screen off" (touch wakes it up)
         overlay = View(this).apply { setBackgroundColor(Color.BLACK); visibility = View.GONE }
+        // small exit/settings button (PIN protected)
+        val exitBtn = TextView(this).apply {
+            text = "⚙"
+            textSize = 20f
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.OVAL
+                setColor(Color.parseColor("#99111318"))
+            }
+            alpha = 0.55f
+            setOnClickListener { askPin() }
+        }
+        root.addView(exitBtn, FrameLayout.LayoutParams(dp(44), dp(44), Gravity.BOTTOM or Gravity.START).apply {
+            leftMargin = dp(10); bottomMargin = dp(10)
+        })
+
         root.addView(overlay, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
         setContentView(root)
@@ -159,7 +182,7 @@ class KioskActivity : Activity(), KioskControl.Ui {
 
     override fun onDestroy() {
         ui.removeCallbacksAndMessages(null)
-        web.destroy()
+        if (::web.isInitialized) web.destroy()
         super.onDestroy()
     }
 
@@ -222,12 +245,49 @@ class KioskActivity : Activity(), KioskControl.Ui {
             .setTitle("Kiosk verlassen")
             .setView(input)
             .setPositiveButton("OK") { _, _ ->
-                if (input.text.toString() == cfg.kioskPin) {
-                    startActivity(Intent(this, MainActivity::class.java).putExtra(MainActivity.EXTRA_FROM_KIOSK, true))
-                } else Toast.makeText(this, "Falsche PIN", Toast.LENGTH_SHORT).show()
+                if (input.text.toString() == cfg.kioskPin) showKioskMenu()
+                else Toast.makeText(this, "Falsche PIN", Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton("Abbrechen", null)
             .show()
+    }
+
+    private fun showKioskMenu() {
+        AlertDialog.Builder(this)
+            .setTitle("Kiosk")
+            .setItems(arrayOf("Kiosk-Modus beenden", "Bridge-Einstellungen öffnen", "Dashboard neu laden", "Abbrechen")) { _, which ->
+                when (which) {
+                    0 -> exitKiosk()
+                    1 -> startActivity(Intent(this, MainActivity::class.java).putExtra(MainActivity.EXTRA_FROM_KIOSK, true))
+                    2 -> reload()
+                }
+            }
+            .show()
+    }
+
+    /** Leaves kiosk mode for good (until "Kiosk starten" is pressed again in the app). The bridge keeps running. */
+    private fun exitKiosk() {
+        cfg.kioskEnabled = false
+        setScreen(true)
+        Toast.makeText(this, "Kiosk-Modus beendet – in der App über „Kiosk starten“ wieder aktivieren", Toast.LENGTH_LONG).show()
+        openOtherLauncher()
+        finish()
+    }
+
+    private fun openOtherLauncher() {
+        val home = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+        val other = packageManager.queryIntentActivities(home, 0)
+            .firstOrNull { it.activityInfo.packageName != packageName }
+        val target = if (other != null) {
+            Intent(home).setClassName(other.activityInfo.packageName, other.activityInfo.name)
+        } else {
+            Intent(this, MainActivity::class.java)
+        }
+        try {
+            startActivity(target.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (_: Exception) {
+            startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }
     }
 
     // ------------------------------------------------------------------ KioskControl.Ui (main thread)
