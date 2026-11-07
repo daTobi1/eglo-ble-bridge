@@ -94,6 +94,8 @@ class MeshManager(
     private val attemptsForMac = HashMap<String, Int>()
     private var reconnectDelay = 5000L
     private var tick = 0
+    private var primaryCycle = false
+    private var futileScans = 0
 
     private val lastSeen = HashMap<Int, Long>()
     private val online = HashSet<Int>()
@@ -184,8 +186,10 @@ class MeshManager(
                     listener.onDeviceOffline(id)
                 }
             }
-            // every 2nd tick: look for lamps that are not reachable through the existing connections
-            if (paired.isNotEmpty() && tick % 2 == 0 && connecting == null && !scanning &&
+            // look for lamps that are not reachable through the existing connections:
+            // every minute at first, every 10 minutes after repeated misses
+            val every = if (futileScans < 3) 2 else 20
+            if (paired.isNotEmpty() && tick % every == 0 && connecting == null && !scanning &&
                 connections.size < MAX_CONNECTIONS && missingLights().isNotEmpty()
             ) {
                 scanForMissing()
@@ -280,6 +284,7 @@ class MeshManager(
             val unseen = known.filter { !scanRssi.containsKey(it) }
             candidates = ArrayDeque(seen + unseen)
             attemptsForMac.clear()
+            primaryCycle = true
             BridgeLog.i("Im Scan gefunden: " + if (seen.isEmpty()) "keine bekannte Lampe" else
                 seen.joinToString { "${nameForMac(it)} (${scanRssi[it]})" })
             tryNextCandidate()
@@ -292,10 +297,12 @@ class MeshManager(
             val visible = missing.filter { (scanRssi[it.mac] ?: -999) >= MIN_RSSI }
                 .sortedByDescending { scanRssi[it.mac] }
             if (visible.isEmpty()) {
+                futileScans++
                 BridgeLog.i("Nicht erreichbar: " + missing.joinToString { it.name.trim() } +
                     " – nicht direkt sichtbar")
                 return@startScan
             }
+            primaryCycle = false
             BridgeLog.i("Direktverbindung zusätzlich zu: " +
                 visible.joinToString { "${it.name.trim()} (${scanRssi[it.mac]})" })
             candidates = ArrayDeque(visible.map { it.mac })
@@ -346,6 +353,14 @@ class MeshManager(
         if (connecting == c) connecting = null
         reconnectDelay = 5000L
         attemptsForMac.remove(c.mac)
+        if (primaryCycle) {
+            // first connection is up: further lamps are only added by the periodic
+            // "missing lamps" scan, so the link is not disturbed by hopeless attempts
+            candidates.clear()
+            primaryCycle = false
+        } else {
+            futileScans = 0
+        }
         publishState()
         c.sendFirst(BROADCAST, C_REQUEST_STATUS, byteArrayOf(0x10))
         // ask the directly connected lamp itself, too
@@ -369,6 +384,7 @@ class MeshManager(
             attemptsForMac[c.mac] = n
             // Android often fails the first attempt (GATT 133 / timeout): retry once in autoConnect mode
             if (n < 2 && scanRssi.containsKey(c.mac)) candidates.addFirst(c.mac)
+            else if (connections.values.any { it.isPaired }) futileScans++
         }
 
         if (connections.values.none { it.isPaired }) {
