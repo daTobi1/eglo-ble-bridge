@@ -429,8 +429,12 @@ class MqttBridge(
                         publish(lampAvailTopic(id), "offline", retain = true, qos = 1)
                     }
                     lights.setMusicTarget(id, false)
+                    lights.dropSoftwareEffect(id)
                 }
-                else -> lights.setMusicTarget(id, false)  // another tablet controls it
+                else -> {  // another tablet controls it
+                    lights.setMusicTarget(id, false)
+                    lights.dropSoftwareEffect(id)
+                }
             }
         }
         publishSourceSelect()
