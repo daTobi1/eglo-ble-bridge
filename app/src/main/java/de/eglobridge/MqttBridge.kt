@@ -113,6 +113,7 @@ class MqttBridge(
     @Volatile var sensitivityPct = 100; private set
     @Volatile var speed = 50; private set
     private var lastSourceOptions = ""
+    private var speedKnown = false
     private val fireKnown = HashSet<String>()
     private val lampKnown = HashSet<String>()
     /** Favourites per lamp: "<id>/1" -> HA light command JSON (shared, retained). */
@@ -747,7 +748,13 @@ class MqttBridge(
 
     private data class Quint(val a: String, val b: String, val c: String, val d: String, val e: Int)
 
+    private var musicKnown = false
+    private var sensKnown = false
+
     private fun ensureSelectionDefaults() {
+        if (!musicKnown) publish(MUSIC, "OFF", retain = true)
+        if (!sensKnown) publish(SENS, sensitivityPct.toString(), retain = true)
+        if (speed == 50 && !speedKnown) publish(SPEED, "50", retain = true)
         // per-lamp setting defaults if nobody has set them yet
         for (d in devices.filter { it.isLight && it.hasColor }) {
             for (key in LAMP_SETTING_KEYS) {
@@ -900,7 +907,7 @@ class MqttBridge(
                 return
             }
             MUSIC_SET -> { publish(MUSIC, if (v.uppercase() == "ON") "ON" else "OFF", retain = true); return }
-            MUSIC -> { setMusic(v.uppercase() == "ON"); return }
+            MUSIC -> { musicKnown = true; setMusic(v.uppercase() == "ON"); return }
             SOURCE_SET -> {
                 val bid = bridges.entries.firstOrNull { it.value.name == v }?.key ?: slug(v)
                 publish(SOURCE, bid, retain = true)
@@ -934,6 +941,7 @@ class MqttBridge(
             }
             SENS_SET -> { v.toFloatOrNull()?.let { publish(SENS, it.toInt().toString(), retain = true) }; return }
             SENS -> {
+                sensKnown = true
                 v.toFloatOrNull()?.let { sensitivityPct = it.toInt(); lights.musicSensitivity = it / 100f }
                 return
             }
@@ -943,7 +951,7 @@ class MqttBridge(
                 setAllLamps("effect_speed", n)
                 return
             }
-            SPEED -> { v.toFloatOrNull()?.let { speed = it.toInt() }; return }
+            SPEED -> { speedKnown = true; v.toFloatOrNull()?.let { speed = it.toInt() }; return }
         }
 
         val parts = topic.split('/')

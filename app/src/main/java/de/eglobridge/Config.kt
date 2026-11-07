@@ -39,6 +39,10 @@ data class MeshDevice(
 
 class Config(context: Context) {
     private val p = context.getSharedPreferences("bridge", Context.MODE_PRIVATE)
+    @android.annotation.SuppressLint("HardwareIds")
+    private val androidId: String = try {
+        android.provider.Settings.Secure.getString(context.contentResolver, android.provider.Settings.Secure.ANDROID_ID) ?: ""
+    } catch (_: Throwable) { "" }
 
     var awoxUser: String
         get() = p.getString("awoxUser", "")!!
@@ -69,7 +73,9 @@ class Config(context: Context) {
 
     /** Name of this tablet (shown in Home Assistant, used for its MQTT id). */
     var bridgeName: String
-        get() = p.getString("bridgeName", null) ?: ("Tablet " + android.os.Build.MODEL)
+        get() = p.getString("bridgeName", null)
+            // several identical tablets must not share a name (it is their MQTT id)
+            ?: ("Tablet " + android.os.Build.MODEL + " " + androidId.takeLast(4).uppercase()).trim()
         set(v) = p.edit().putString("bridgeName", v.trim()).apply()
 
     var debugLog: Boolean
