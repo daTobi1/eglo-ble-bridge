@@ -5,6 +5,7 @@ import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
@@ -68,9 +69,10 @@ class MeshManager(
 
         private const val MAX_CONNECTIONS = 3
         private const val SCAN_MS = 6000L
-        private const val TICK_MS = 30000L
-        private const val MISSING_AFTER_MS = 90 * 1000L
-        private const val OFFLINE_AFTER_MS = 5 * 60 * 1000L
+        private const val TICK_MS = 15000L
+        private const val MISSING_AFTER_MS = 60 * 1000L
+        private const val OFFLINE_AFTER_MS = 2 * 60 * 1000L
+        private const val WATCH_REACT_MS = 15 * 1000L
         private const val MIN_RSSI = -97
     }
 
@@ -103,6 +105,10 @@ class MeshManager(
     private val heardVia = HashMap<Int, String>()
     private var lastStateText = ""
 
+    // permanent low-power scan that notices lamps as soon as they advertise again (e.g. after a power cut)
+    private var watching = false
+    private val watchReactedAt = HashMap<String, Long>()
+
     // ---------------------------------------------------------------- public API
 
     fun start(cfg: Config) {
@@ -127,6 +133,7 @@ class MeshManager(
             running = false
             handler.removeCallbacks(tickRunnable)
             handler.removeCallbacks(reconnectRunnable)
+            stopWatch()
             stopScan()
             connecting?.close("Stopp")
             connections.values.toList().forEach { it.close("Stopp") }
@@ -204,18 +211,19 @@ class MeshManager(
                 if (now - (lastSeen[id] ?: 0L) > OFFLINE_AFTER_MS) {
                     online.remove(id)
                     heardVia.remove(id)
-                    BridgeLog.w("${deviceName(id)} seit 5 Minuten ohne Meldung -> offline")
+                    BridgeLog.w("${deviceName(id)} seit 2 Minuten ohne Meldung -> offline")
                     listener.onDeviceOffline(id)
                 }
             }
             // look for lamps that are not reachable through the existing connections:
             // every minute at first, every 10 minutes after repeated misses
-            val every = if (futileScans < 3) 2 else 20
+            val every = if (futileScans < 3) 4 else 40
             if (paired.isNotEmpty() && tick % every == 0 && connecting == null && !scanning &&
                 connections.size < MAX_CONNECTIONS && missingLights().isNotEmpty()
             ) {
                 scanForMissing()
             }
+            ensureWatch()
             handler.postDelayed(this, TICK_MS)
         }
     }
@@ -262,6 +270,7 @@ class MeshManager(
             if (!hasLocationPermission()) BridgeLog.w("Keine Standort-Berechtigung – verbinde ohne Scan")
             then(); return
         }
+        stopWatch()
         scanRssi.clear()
         scanning = true
         scanPurpose = purpose
@@ -278,6 +287,7 @@ class MeshManager(
             stopScan()
             scanning = false
             publishState()
+            ensureWatch()
             // give the controller a moment after stopping the scan
             handler.postDelayed({ if (running) then() }, 500)
         }, SCAN_MS)
@@ -345,7 +355,7 @@ class MeshManager(
             if (connections.values.none { it.isPaired }) {
                 BridgeLog.w("Keine Lampe erreichbar – neuer Versuch in ${reconnectDelay / 1000} s")
                 scheduleReconnect(reconnectDelay)
-                reconnectDelay = minOf(reconnectDelay * 2, 120000L)
+                reconnectDelay = minOf(reconnectDelay * 2, 30000L)
             }
             publishState()
             return
@@ -354,6 +364,7 @@ class MeshManager(
             BridgeLog.e("Ungültige MAC $mac", t); tryNextCandidate(); return
         }
         val auto = (attemptsForMac[mac] ?: 0) >= 1
+        stopWatch()   // old controllers connect much more reliably without a parallel scan
         val c = MeshConnection(context, handler, mac, meshName, meshPassword, auto, this)
         connecting = c
         connections[mac] = c
@@ -374,6 +385,7 @@ class MeshManager(
 
     override fun onPaired(c: MeshConnection) {
         if (connecting == c) connecting = null
+        handler.postDelayed({ ensureWatch() }, 3000)
         reconnectDelay = 5000L
         attemptsForMac.remove(c.mac)
         if (primaryCycle) {
@@ -396,6 +408,7 @@ class MeshManager(
         if (connections[c.mac] == c) connections.remove(c.mac)
         val wasConnecting = connecting == c
         if (wasConnecting) connecting = null
+        handler.postDelayed({ ensureWatch() }, 2000)
         heardVia.entries.removeAll { it.value == c.mac }
         if (!running) return
 
@@ -481,6 +494,95 @@ class MeshManager(
             heardVia.remove(status.meshId)
             listener.onDeviceOffline(status.meshId)
         }
+    }
+
+    // ---------------------------------------------------------------- watch scan (fast re-detection)
+
+    private val watchCallback = object : ScanCallback() {
+        override fun onScanResult(callbackType: Int, result: ScanResult) {
+            val mac = result.device.address.uppercase()
+            val rssi = result.rssi
+            handler.post { onWatchSeen(mac, rssi) }
+        }
+
+        override fun onBatchScanResults(results: MutableList<ScanResult>) {
+            for (r in results) onScanResult(0, r)
+        }
+
+        override fun onScanFailed(errorCode: Int) {
+            handler.post {
+                watching = false
+                if (BridgeLog.verbose) BridgeLog.w("Hintergrund-Scan fehlgeschlagen (Code $errorCode)")
+            }
+        }
+    }
+
+    private fun ensureWatch() {
+        if (!running || watching || scanning || connecting != null) return
+        val scanner = adapter?.bluetoothLeScanner ?: return
+        if (adapter?.isEnabled != true || !hasLocationPermission()) return
+        val macs = lights.map { it.mac }.distinct()
+        if (macs.isEmpty()) return
+        try {
+            // filtered scans keep running in the background without being throttled by Android
+            val filters = macs.map { ScanFilter.Builder().setDeviceAddress(it).build() }
+            val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_POWER).build()
+            scanner.startScan(filters, settings, watchCallback)
+            watching = true
+        } catch (t: Throwable) {
+            if (BridgeLog.verbose) BridgeLog.w("Hintergrund-Scan nicht möglich: ${t.message}")
+        }
+    }
+
+    private fun stopWatch() {
+        if (!watching) return
+        watching = false
+        try { adapter?.bluetoothLeScanner?.stopScan(watchCallback) } catch (_: Throwable) { }
+    }
+
+    /** A known lamp advertises. If it is currently missing, ask the mesh for its state or connect to it. */
+    private fun onWatchSeen(mac: String, rssi: Int) {
+        if (!running) return
+        lastRssi[mac] = rssi
+        scanSeenAt[mac] = SystemClock.elapsedRealtime()
+        val d = lights.firstOrNull { it.mac == mac } ?: return
+        if (connections.containsKey(mac)) return
+        val now = SystemClock.elapsedRealtime()
+        val missing = !online.contains(d.meshId) || now - (lastSeen[d.meshId] ?: 0L) > MISSING_AFTER_MS
+        if (!missing) return
+        if (now - (watchReactedAt[mac] ?: 0L) < WATCH_REACT_MS) return
+        watchReactedAt[mac] = now
+        val paired = connections.values.filter { it.isPaired }
+        BridgeLog.i("${d.name.trim()} sendet wieder (RSSI $rssi)")
+        if (paired.isEmpty()) {
+            // no connection at all: connect straight to this lamp
+            handler.removeCallbacks(reconnectRunnable)
+            if (connecting == null && !scanning) {
+                scanRssi[mac] = rssi
+                candidates = ArrayDeque(listOf(mac))
+                attemptsForMac.clear()
+                primaryCycle = true
+                tryNextCandidate()
+            }
+            return
+        }
+        // first ask through the mesh – cheap and fast if the lamp is reachable there
+        paired.forEach { it.send(d.meshId, C_REQUEST_STATUS, byteArrayOf(0x10)) }
+        handler.postDelayed({
+            if (!running) return@postDelayed
+            val t = SystemClock.elapsedRealtime()
+            val stillMissing = !online.contains(d.meshId) || t - (lastSeen[d.meshId] ?: 0L) > 5000L
+            if (stillMissing && connecting == null && !scanning && connections.size < MAX_CONNECTIONS &&
+                !connections.containsKey(mac) && rssi >= MIN_RSSI
+            ) {
+                BridgeLog.i("${d.name.trim()} nicht über das Mesh erreichbar – verbinde direkt")
+                scanRssi[mac] = rssi
+                primaryCycle = false
+                candidates = ArrayDeque(listOf(mac))
+                attemptsForMac.clear()
+                tryNextCandidate()
+            }
+        }, 4000)
     }
 
     // ---------------------------------------------------------------- commands (thread safe)
