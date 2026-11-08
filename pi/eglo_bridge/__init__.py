@@ -1,3 +1,3 @@
 """EGLO BLE Bridge for Linux / Raspberry Pi (port of the Android app)."""
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"

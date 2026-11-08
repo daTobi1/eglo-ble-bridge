@@ -27,7 +27,9 @@ CHAR_PAIR = "00010203-0405-0607-0809-0a0b0c0d1914"
 
 COMMAND_SPACING_S = 0.18
 OP_TIMEOUT_S = 8.0
-CONNECT_TIMEOUT_S = 35.0
+#: attempts to enable the status notifications before the connection is rebuilt
+NOTIFY_ATTEMPTS = 3
+CONNECT_TIMEOUT_S = 60.0  # connect (20 s) + pairing + up to 3 notify attempts
 MAX_QUEUE = 40
 
 
@@ -75,6 +77,8 @@ class MeshConnection:
         self.disconnect_task: asyncio.Task | None = None
         self.commands: deque[Cmd] = deque()
         self._last_command_at = 0.0
+        #: monotonic time of the last notification from the lamp (watchdog in MeshManager)
+        self.last_rx = 0.0
         self._k = ("conn", id(self))  # timer key prefix
 
     @property
@@ -196,21 +200,35 @@ class MeshConnection:
         if value[0] == 0x0D:
             self.session_key = crypto.make_session_key(
                 self.mesh_name, self.mesh_password, self._session_random, value[1:9])
-            try:
-                async with self._gatt_lock:
-                    await asyncio.wait_for(client.start_notify(status_char, self._on_notify), OP_TIMEOUT_S)
-            except Exception as err:  # noqa: BLE001
-                # not fatal: commands still work. But without BlueZ notifications no status
-                # arrives at all - lamps then show as offline after 2 minutes. Say so loudly.
-                log.e(f"{self.mac}: Status-Benachrichtigungen nicht aktivierbar – Lampen werden "
-                      f"schalten, aber nach 2 min als offline gelten ({self._err(err)})")
+            # Without notifications no status arrives at all and the lamps would turn
+            # "offline" after 2 minutes while the link looks fine: retry, then reconnect.
+            last_err: BaseException | None = None
+            for attempt in range(1, NOTIFY_ATTEMPTS + 1):
+                try:
+                    async with self._gatt_lock:
+                        await asyncio.wait_for(client.start_notify(status_char, self._on_notify), OP_TIMEOUT_S)
+                    last_err = None
+                    if attempt > 1:
+                        log.i(f"{self.mac}: Status-Benachrichtigungen im {attempt}. Versuch aktiv")
+                    break
+                except Exception as err:  # noqa: BLE001
+                    last_err = err
+                    if self.state == State.CLOSED or not client.is_connected:
+                        break
+                    log.w(f"{self.mac}: Status-Benachrichtigungen nicht aktivierbar "
+                          f"(Versuch {attempt}/{NOTIFY_ATTEMPTS}: {self._err(err)})")
+                    await asyncio.sleep(0.5)
             if self.state == State.CLOSED:
+                return
+            if last_err is not None:
+                self.close(f"Status-Benachrichtigungen nicht aktivierbar ({self._err(last_err)})")
                 return
             # AwoX/Telink: notifications are enabled by writing 0x01 to the status characteristic itself
             await self._gatt("notify-enable",
                              lambda: client.write_gatt_char(status_char, b"\x01", response=True))
             self.sched.remove((self._k, "timeout"))
             self.state = State.PAIRED
+            self.last_rx = time.monotonic()  # watchdog grace period starts now
             log.i(f"Mesh-Anmeldung an {self.mac} erfolgreich")
             self.events.on_paired(self)
             self._pump()
@@ -223,6 +241,7 @@ class MeshConnection:
         key = self.session_key
         if key is None or self.state == State.CLOSED or len(data) < 20:
             return
+        self.last_rx = time.monotonic()
         self.events.on_packet(self, crypto.decrypt_packet(key, self.mac, bytes(data)))
 
     # ------------------------------------------------------------------ commands
