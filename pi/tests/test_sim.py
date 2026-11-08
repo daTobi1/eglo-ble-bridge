@@ -34,7 +34,7 @@ class Listener:
 
 @pytest.fixture(autouse=True)
 def patch_ble(monkeypatch):
-    monkeypatch.setattr(connection, "BleakClient", fake_ble.FakeClient)
+    monkeypatch.setattr(connection, "GattClient", fake_ble.FakeClient)
     monkeypatch.setattr(mesh, "BleakScanner", fake_ble.FakeScanner)
     monkeypatch.setattr(mesh, "SCAN_S", 0.2)
     fake_ble.LAMPS.clear()

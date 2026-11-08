@@ -74,6 +74,8 @@ class Config:
     musicSensitivity: float = 1.0  # noqa: N815
     #: Bluetooth adapter, e.g. "hci0" (empty = default)
     adapter: str = ""
+    #: lamp connections: "att" = own ATT channel (default), "bluez" = BlueZ GATT via bleak
+    bleBackend: str = "att"  # noqa: N815
     #: mesh ids of the lamps this bridge is responsible for; None = all lamps
     assignedLamps: list[int] | None = None  # noqa: N815
     devices: list[MeshDevice] = field(default_factory=list)
