@@ -145,6 +145,11 @@ def test_bridge_end_to_end(broker, tmp_path, monkeypatch):
             ha.pub("eglo_bridge/light/3/set", json.dumps({"state": "OFF"}))
             await _wait(lambda: any(c == 0xD0 and data[0] == 0 for _d, c, data in lamp.received))
 
+            # a stale retained "offline" (old session overlapping a restart) heals itself
+            ha.pub("eglo_bridge/bridge/pi_kueche/status", "offline", retain=True)
+            await asyncio.sleep(0.3)
+            await _wait(lambda: ha.msgs.get("eglo_bridge/bridge/pi_kueche/status") == "online")
+
             # HA button "reconnect"
             ha.pub("eglo_bridge/bridge/pi_kueche/cmd", "reconnect")
             await _wait(lambda: "Neuverbindung" in " ".join(entry.log.snapshot()[-20:]))

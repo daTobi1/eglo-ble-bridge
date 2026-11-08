@@ -752,6 +752,11 @@ class MqttBridge:
                     log.i(f"Bridge „{b.name}“ ist {'online' if online else 'offline'}")
                 if bid != self.bridge_id:
                     b.online = online
+                elif not online and self.running and self.connected:
+                    # a stale "offline" (e.g. the goodbye of an older session that overlapped a
+                    # restart) must not leave us unavailable in HA while we are running
+                    log.w("Eigener Status stand auf offline – setze wieder online")
+                    self._publish(self.avail, "online", retain=True, qos=1)
             elif parts[3] == "info":
                 try:
                     o = json.loads(v)

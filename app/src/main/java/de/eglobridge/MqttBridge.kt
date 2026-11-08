@@ -970,6 +970,12 @@ class MqttBridge(
                         BridgeLog.i("Tablet „${b.name}“ ist ${if (online) "online" else "offline"}")
                     }
                     if (bid != bridgeId) b.online = online
+                    else if (!online && running && connected) {
+                        // a stale "offline" (goodbye of an older session that overlapped a restart)
+                        // must not leave this bridge unavailable in HA while it is running
+                        BridgeLog.w("Eigener Status stand auf offline – setze wieder online")
+                        publish(avail, "online", retain = true, qos = 1)
+                    }
                 }
                 "info" -> try {
                     val o = JSONObject(v)

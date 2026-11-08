@@ -148,7 +148,11 @@ async def _run(config_path: Path) -> int:
 
 def _ask(prompt: str, default: str = "", secret: bool = False) -> str:
     shown = f" [{'***' if secret and default else default}]" if default else ""
-    value = getpass.getpass(f"{prompt}{shown}: ") if secret else input(f"{prompt}{shown}: ")
+    try:
+        value = getpass.getpass(f"{prompt}{shown}: ") if secret else input(f"{prompt}{shown}: ")
+    except EOFError:  # no terminal (e.g. install.sh without input): keep the default
+        print()
+        raise SystemExit("Keine Eingabe möglich – „eglo-bridge setup“ bitte in einem Terminal ausführen")
     return value.strip() or default
 
 
