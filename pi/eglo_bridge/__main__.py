@@ -45,6 +45,8 @@ class Bridge:
             return False
         log.i(f"EGLO Bridge {__version__} (Linux) gestartet")
         log.verbose = cfg.debugLog
+        from . import connection
+        connection.BACKEND = "bluez" if cfg.bleBackend == "bluez" else "att"
         self.mesh = MeshManager(self.sched, self, adapter=cfg.adapter)
         self.lights = LightController(self.sched, self.mesh, cfg.devices)
         self.lights.music_sensitivity = cfg.musicSensitivity

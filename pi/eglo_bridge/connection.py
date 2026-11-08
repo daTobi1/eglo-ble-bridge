@@ -18,6 +18,7 @@ from bleak import BleakClient
 from bleak.backends.device import BLEDevice
 
 from . import crypto, log
+from .att import AttClient
 from .sched import Scheduler
 
 SERVICE = "00010203-0405-0607-0809-0a0b0c0d1910"
@@ -26,6 +27,13 @@ CHAR_COMMAND = "00010203-0405-0607-0809-0a0b0c0d1912"
 CHAR_PAIR = "00010203-0405-0607-0809-0a0b0c0d1914"
 
 COMMAND_SPACING_S = 0.18
+#: factory for the ATT backend (replaced by a fake in the tests)
+GattClient = AttClient
+
+#: lamp connections: "att" = own raw ATT channel (default, no CCCD write - see att.py),
+#: "bluez" = BlueZ's GATT client via bleak (fallback)
+BACKEND = "att"
+
 OP_TIMEOUT_S = 8.0
 #: attempts to enable the status notifications before the connection is rebuilt
 NOTIFY_ATTEMPTS = 3
@@ -68,7 +76,7 @@ class MeshConnection:
         self.before_connect = before_connect
 
         self.state = State.NEW
-        self.client: BleakClient | None = None
+        self.client = None
         self.session_key: bytes | None = None
         self._session_random = b""
         self._cmd_response = True
@@ -121,13 +129,13 @@ class MeshConnection:
         self.events.on_closed(self, was_paired, reason)
 
     @staticmethod
-    async def _disconnect(client: BleakClient) -> None:
+    async def _disconnect(client) -> None:
         try:
             await asyncio.wait_for(client.disconnect(), 10)
         except Exception:  # noqa: BLE001
             pass
 
-    def _on_disconnected(self, client: BleakClient) -> None:
+    def _on_disconnected(self, client) -> None:
         # bleak calls this on the event loop. While connect() is still running, bleak may
         # report a short disconnect (le-connection-abort-by-local) and retry by itself:
         # leave that to connect() / the connect timeout instead of aborting the retry.
@@ -161,7 +169,7 @@ class MeshConnection:
             kwargs = {"disconnected_callback": self._on_disconnected, "timeout": 20.0}
             if self.adapter:
                 kwargs["bluez"] = {"adapter": self.adapter}
-            client = BleakClient(device, **kwargs)
+            client = GattClient(device, **kwargs) if BACKEND == "att" else BleakClient(device, **kwargs)
             self.client = client
             await client.connect()
             if self.state == State.CLOSED or client is not self.client:
@@ -193,7 +201,7 @@ class MeshConnection:
             if self.state != State.CLOSED:
                 self.close(f"Verbindungsfehler: {self._err(err)}")
 
-    async def _handle_pair_reply(self, client: BleakClient, status_char, value: bytes) -> None:
+    async def _handle_pair_reply(self, client, status_char, value: bytes) -> None:
         if not value:
             self.close("Pair-Antwort fehlt")
             return
@@ -286,7 +294,7 @@ class MeshConnection:
         if self.commands:
             self.sched.post_delayed(COMMAND_SPACING_S, self._pump, key=(self._k, "pump"))
 
-    async def _write_command(self, client: BleakClient, pkt: bytes, name: str) -> None:
+    async def _write_command(self, client, pkt: bytes, name: str) -> None:
         # Like Android's onCharacteristicWrite: a rejected write is logged, the link stays.
         # Only a hanging operation or a lost link closes the connection.
         async with self._gatt_lock:

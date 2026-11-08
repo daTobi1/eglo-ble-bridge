@@ -85,7 +85,7 @@ async def _wait(cond, timeout=8.0):
 
 
 def test_bridge_end_to_end(broker, tmp_path, monkeypatch):
-    monkeypatch.setattr(connection, "BleakClient", fake_ble.FakeClient)
+    monkeypatch.setattr(connection, "GattClient", fake_ble.FakeClient)
     monkeypatch.setattr(mesh, "BleakScanner", fake_ble.FakeScanner)
     monkeypatch.setattr(mesh, "SCAN_S", 0.2)
     fake_ble.LAMPS.clear()
