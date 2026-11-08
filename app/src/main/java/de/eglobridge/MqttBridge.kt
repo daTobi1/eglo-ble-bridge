@@ -66,7 +66,8 @@ class MqttBridge(
         }
     }
 
-    private class BridgeInfo(var name: String, var online: Boolean)
+    /** [mic] = bridge can listen; the Raspberry Pi port announces "mic": false without a microphone. */
+    private class BridgeInfo(var name: String, var online: Boolean, var mic: Boolean = true)
 
     // per-bridge topics
     private val bTopic = "$BASE/bridge/$bridgeId"
@@ -80,6 +81,12 @@ class MqttBridge(
     private val updateTopic = "$bTopic/update"
     private val updateInstall = "$bTopic/update/install"
     private val micTopic = "$bTopic/mic"
+    /** Which lamps this bridge is responsible for (per-bridge switches in HA). */
+    private val lampAssign = "$bTopic/lamp"
+    private val allAssign = "$bTopic/lamps_all"
+
+    /** Called (on the handler thread) after the lamp assignment changed, e.g. to refresh the app UI. */
+    @Volatile var onAssignmentChanged: (() -> Unit)? = null
 
     /** Commands for the service: restart, reimport, check_update, install_update. */
     @Volatile var onServiceCommand: ((String) -> Unit)? = null
@@ -236,13 +243,15 @@ class MqttBridge(
                 "$BASE/bridge/+/status", "$BASE/bridge/+/info", cmdTopic, debugSet, updateInstall,
                 "$screenTopic/set", "$brightTopic/set", "$timeoutTopic/set", "$urlTopic/set",
                 "$BASE/light/#", "$BASE/music/#", SENS, SENS_SET, SPEED, SPEED_SET,
-                "$FIRE_SPEED/#", "$FIRE_STRENGTH/#", "$FIRE_BRIGHT/#"
-            ), IntArray(18))
+                "$FIRE_SPEED/#", "$FIRE_STRENGTH/#", "$FIRE_BRIGHT/#",
+                "$lampAssign/+/set", "$allAssign/set"
+            ), IntArray(20))
         } catch (t: Throwable) {
             BridgeLog.e("MQTT-Subscribe fehlgeschlagen", t)
         }
         publish(avail, "online", retain = true, qos = 1)
-        publish(info, JSONObject().put("name", bridgeName).put("version", version).toString(), retain = true, qos = 1)
+        publish(info, JSONObject().put("name", bridgeName).put("version", version).put("mic", true)
+            .put("platform", "android").toString(), retain = true, qos = 1)
         publish(stateText, bridgeState, retain = true)
         publish(debugTopic, if (BridgeLog.verbose) "ON" else "OFF", retain = true)
         micState = ""
@@ -251,6 +260,7 @@ class MqttBridge(
         publishUpdate(inProgress = false)
         cleanupLegacyDiscovery()
         publishDiscovery()
+        publishAssignment()
         published.clear()  // force re-publish of link scores
         // give retained messages a moment to arrive, then decide ownership
         handler.postDelayed({ recompute(); ensureSelectionDefaults() }, 2500)
@@ -464,6 +474,26 @@ class MqttBridge(
             .put("availability_topic", avail)
             .put("entity_category", "config")
             .put("device", bridgeDevice).toString(), retain = true, qos = 1)
+        publish("homeassistant/switch/eglo_bridge_${bridgeId}_lamps_all/config", JSONObject()
+            .put("name", "Zuständig für alle Lampen")
+            .put("unique_id", "eglo_bridge_${bridgeId}_lamps_all")
+            .put("command_topic", "$allAssign/set")
+            .put("state_topic", allAssign)
+            .put("availability_topic", avail)
+            .put("icon", "mdi:lightbulb-group")
+            .put("entity_category", "config")
+            .put("device", bridgeDevice).toString(), retain = true, qos = 1)
+        for (d in devices.filter { it.isLight }) {
+            publish("homeassistant/switch/eglo_bridge_${bridgeId}_lamp_${d.meshId}/config", JSONObject()
+                .put("name", "Zuständig: ${d.name.trim()}")
+                .put("unique_id", "eglo_bridge_${bridgeId}_lamp_${d.meshId}")
+                .put("command_topic", "$lampAssign/${d.meshId}/set")
+                .put("state_topic", "$lampAssign/${d.meshId}")
+                .put("availability_topic", avail)
+                .put("icon", "mdi:lightbulb-on-outline")
+                .put("entity_category", "config")
+                .put("device", bridgeDevice).toString(), retain = true, qos = 1)
+        }
         publish("homeassistant/sensor/eglo_bridge_${bridgeId}_mic/config", JSONObject()
             .put("name", "Mikrofon")
             .put("unique_id", "eglo_bridge_${bridgeId}_mic")
@@ -561,9 +591,53 @@ class MqttBridge(
             .put("device", bridgeDevice).toString(), retain = true, qos = 1)
     }
 
+    // ================================================================= lamp assignment
+
+    /** Mesh ids of the lamps this bridge is responsible for; null = all. */
+    val assignedLamps: Set<Int>? get() = config?.assignedLamps
+
+    private fun publishAssignment() {
+        val a = assignedLamps
+        publish(allAssign, if (a == null) "ON" else "OFF", retain = true)
+        for (d in devices.filter { it.isLight }) {
+            publish("$lampAssign/${d.meshId}", if (a == null || d.meshId in a) "ON" else "OFF", retain = true)
+        }
+    }
+
+    /** Apply a new lamp assignment (null = all lamps), persist it and tell HA. Thread-safe. */
+    fun setAssignment(assigned: Set<Int>?) {
+        handler.post {
+            val lightIds = devices.filter { it.isLight }.map { it.meshId }.toSet()
+            val clean = assigned?.filter { it in lightIds }?.toSet()
+            config?.assignedLamps = clean
+            mesh.setAssigned(clean)
+            // mesh.setAssigned posts to this handler too: recompute after it ran
+            handler.post {
+                publishAssignment()
+                recompute()
+                onAssignmentChanged?.invoke()
+            }
+        }
+    }
+
+    private fun onAssignMessage(meshId: Int?, on: Boolean) {
+        val lightIds = devices.filter { it.isLight }.map { it.meshId }
+        if (meshId == null) {  // "all lamps" switch
+            if (on) setAssignment(null)
+            // switching "all" off keeps the current lamps, but as an explicit list
+            // (new lamps from a later import are then not added automatically)
+            else if (assignedLamps == null) setAssignment(lightIds.toSet())
+            return
+        }
+        if (meshId !in lightIds) return
+        val current = (assignedLamps ?: lightIds.toSet()).toMutableSet()
+        if (on) current.add(meshId) else current.remove(meshId)
+        setAssignment(if (current.containsAll(lightIds)) null else current)
+    }
+
     /** Select entity "Musikquelle" listing all known tablets. Re-published when the list changes. */
     private fun publishSourceSelect(force: Boolean = false) {
-        val names = bridges.values.map { it.name }.distinct().sorted()
+        val names = bridges.values.filter { it.mic }.map { it.name }.distinct().sorted()
         val key = names.joinToString("|")
         if (!force && key == lastSourceOptions) return
         lastSourceOptions = key
@@ -776,8 +850,10 @@ class MqttBridge(
     /** The tablet whose microphone is used: the chosen one if online, else the first online tablet. */
     fun effectiveSource(): String {
         val chosen = musicSourceId
-        if (chosen != null && (chosen == bridgeId || bridges[chosen]?.online == true)) return chosen
-        return bridges.filter { it.value.online || it.key == bridgeId }.keys.minOrNull() ?: bridgeId
+        // a chosen bridge that cannot listen (e.g. stale retained choice of a Pi without microphone) is skipped
+        if (chosen != null && bridges[chosen]?.mic != false &&
+            (chosen == bridgeId || bridges[chosen]?.online == true)) return chosen
+        return bridges.filter { (it.value.online || it.key == bridgeId) && it.value.mic }.keys.minOrNull() ?: bridgeId
     }
 
     private fun requestMusic(on: Boolean) {
@@ -862,6 +938,12 @@ class MqttBridge(
 
     private fun onMessage(topic: String, payload: String) {
         val v = payload.trim()
+        if (topic == "$allAssign/set") { onAssignMessage(null, v.uppercase() == "ON"); return }
+        if (topic.startsWith("$lampAssign/") && topic.endsWith("/set")) {
+            topic.removePrefix("$lampAssign/").removeSuffix("/set").toIntOrNull()
+                ?.let { onAssignMessage(it, v.uppercase() == "ON") }
+            return
+        }
         when (topic) {
             cmdTopic -> {
                 when (v) {
@@ -966,8 +1048,18 @@ class MqttBridge(
                         BridgeLog.i("Tablet „${b.name}“ ist ${if (online) "online" else "offline"}")
                     }
                     if (bid != bridgeId) b.online = online
+                    else if (!online && running && connected) {
+                        // a stale "offline" (goodbye of an older session that overlapped a restart)
+                        // must not leave this bridge unavailable in HA while it is running
+                        BridgeLog.w("Eigener Status stand auf offline – setze wieder online")
+                        publish(avail, "online", retain = true, qos = 1)
+                    }
                 }
-                "info" -> try { b.name = JSONObject(v).optString("name", bid) } catch (_: Exception) { }
+                "info" -> try {
+                    val o = JSONObject(v)
+                    b.name = o.optString("name", bid)
+                    if (bid != bridgeId) b.mic = o.optBoolean("mic", true)
+                } catch (_: Exception) { }
             }
             recompute()
             return
@@ -1066,7 +1158,7 @@ class MqttBridge(
     }
 
     fun musicSourceName(): String = bridges[effectiveSource()]?.name ?: effectiveSource()
-    fun bridgeNames(): List<String> = bridges.values.map { it.name }.distinct().sorted()
+    fun bridgeNames(): List<String> = bridges.values.filter { it.mic }.map { it.name }.distinct().sorted()
     fun setMusicSource(name: String) {
         if (connected) publish(SOURCE_SET, name)
     }

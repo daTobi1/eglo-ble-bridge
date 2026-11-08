@@ -46,6 +46,8 @@ class MainActivity : Activity() {
     private lateinit var btnMusic: Button
     private val lampPanels = LinkedHashMap<Int, LampPanel>()
     private val musicChecks = LinkedHashMap<Int, CheckBox>()
+    private val assignChecks = LinkedHashMap<Int, CheckBox>()
+    private var assignAll: CheckBox? = null
     private lateinit var musicSource: android.widget.Spinner
     private lateinit var bridgeName: EditText
     private lateinit var kioskUrl: EditText
@@ -261,6 +263,66 @@ class MainActivity : Activity() {
             musicChecks[d.meshId] = cb
             box.addView(cb)
         }
+        buildAssignChecks()
+    }
+
+    // ---------------------------------------------------------------- lamp assignment
+
+    /** Checkbox list "this tablet is responsible for": "all lamps" plus one box per lamp. */
+    private fun buildAssignChecks() {
+        val box = findViewById<LinearLayout>(R.id.assignLamps)
+        box.removeAllViews()
+        assignChecks.clear()
+        assignAll = null
+        val lights = cfg.devices.filter { it.isLight }
+        if (lights.isEmpty()) return
+        assignAll = CheckBox(this).apply {
+            text = "Alle Lampen"
+            setOnCheckedChangeListener(assignAllListener)
+            box.addView(this)
+        }
+        for (d in lights) {
+            val cb = CheckBox(this)
+            cb.text = d.name.trim()
+            cb.setPadding(cb.paddingLeft + 24, cb.paddingTop, cb.paddingRight, cb.paddingBottom)
+            cb.setOnCheckedChangeListener(assignLampListener)
+            assignChecks[d.meshId] = cb
+            box.addView(cb)
+        }
+        showAssignment(BridgeService.hub?.assignedLamps ?: cfg.assignedLamps)
+    }
+
+    private val assignAllListener = android.widget.CompoundButton.OnCheckedChangeListener { _, checked ->
+        // "all" off keeps the current lamps as an explicit list (new lamps are then not added automatically)
+        applyAssignment(if (checked) null else assignChecks.keys.toSet())
+    }
+
+    private val assignLampListener = android.widget.CompoundButton.OnCheckedChangeListener { _, _ ->
+        val chosen = assignChecks.filterValues { it.isChecked }.keys
+        applyAssignment(if (chosen.size == assignChecks.size) null else chosen.toSet())
+    }
+
+    private fun applyAssignment(assigned: Set<Int>?) {
+        cfg.assignedLamps = assigned                    // persisted now (also used at the next start)
+        BridgeService.hub?.setAssignment(assigned)      // running bridge: apply immediately + tell HA
+        showAssignment(assigned)
+    }
+
+    /** Reflect the assignment (also when changed in Home Assistant) without re-triggering the listeners. */
+    private fun showAssignment(assigned: Set<Int>?) {
+        assignAll?.let {
+            it.setOnCheckedChangeListener(null)
+            it.isChecked = assigned == null
+            it.setOnCheckedChangeListener(assignAllListener)
+        }
+        for ((id, cb) in assignChecks) {
+            val on = assigned == null || id in assigned
+            if (cb.isChecked != on) {
+                cb.setOnCheckedChangeListener(null)
+                cb.isChecked = on
+                cb.setOnCheckedChangeListener(assignLampListener)
+            }
+        }
     }
 
     private fun musicCheckListener(id: Int) = android.widget.CompoundButton.OnCheckedChangeListener { _, checked ->
@@ -271,6 +333,7 @@ class MainActivity : Activity() {
         val hub = BridgeService.hub
         for ((id, panel) in lampPanels) panel.update(hub?.uiState(id), hub?.ownerName(id))
         if (hub != null) {
+            showAssignment(hub.assignedLamps)
             for ((id, cb) in musicChecks) {
                 val sel = hub.musicSelected(id)
                 if (cb.isChecked != sel) {

@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eglo-bridge"
+dynamic = ["version"]
+description = "EGLO/AwoX BLE mesh to MQTT bridge for Linux / Raspberry Pi"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "bleak>=3.0,<4",
+    "paho-mqtt>=2.0",
+    "cryptography>=3.4",
+]
+
+[project.optional-dependencies]
+music = ["numpy", "sounddevice"]
+test = ["pytest"]
+
+[project.scripts]
+eglo-bridge = "eglo_bridge.__main__:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "eglo_bridge.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["eglo_bridge*"]
+
+[tool.pytest.ini_options]
+pythonpath = [".", "tests"]

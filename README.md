@@ -7,6 +7,8 @@ Android-App, die ein altes Tablet zur **Brücke zwischen EGLO-Connect/AwoX-Bluet
 - läuft als Hintergrunddienst, startet nach Neustart automatisch
 - Diagnose-Entitäten in HA: Status, Log, Button „Neu verbinden“
 
+> **Raspberry Pi / Linux:** Dieselbe Bridge gibt es auch als Linux-Dienst, siehe [`pi/`](pi/README.md). Pi und Tablets arbeiten zusammen; jede Lampe wird von der Bridge mit dem besten Empfang gesteuert.
+
 ## Installation
 
 1. Auf dem Tablet die APK aus dem Release **[latest](../../releases/tag/latest)** herunterladen und installieren.
@@ -16,6 +18,14 @@ Android-App, die ein altes Tablet zur **Brücke zwischen EGLO-Connect/AwoX-Bluet
 5. **Speichern & Starten**.
 
 Die Lampen erscheinen in Home Assistant unter *Einstellungen → Geräte & Dienste → MQTT*.
+
+## Zuständigkeit mehrerer Bridges
+
+Jede Bridge (Tablet, Pi) kann auf bestimmte Lampen beschränkt werden: Sie verbindet sich dann nur
+mit diesen Lampen und steuert/meldet nur diese – die übrigen übernimmt eine andere Bridge.
+Einstellbar in der Android-App („Für welche Lampen ist dieses Tablet zuständig?“) und in
+Home Assistant beim Gerät der jeweiligen Bridge („Zuständig für alle Lampen“ bzw.
+„Zuständig: <Lampe>“). Standard: alle Lampen.
 
 ## Hinweise
 
