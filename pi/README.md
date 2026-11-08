@@ -41,6 +41,14 @@ Anschließend startet der Dienst `eglo-bridge` und läuft künftig automatisch b
 
 Die Konfiguration liegt in `/etc/eglo-bridge/config.json` (nur für `eglo-bridge` lesbar, weil sie Passwörter enthält). Ein zweiter Bluetooth-Adapter lässt sich dort mit `"adapter": "hci1"` auswählen.
 
+## Zuständigkeit mehrerer Bridges
+
+Jede Bridge (Tablet, Pi) kann auf bestimmte Lampen beschränkt werden: Sie verbindet sich dann nur
+mit diesen Lampen und steuert/meldet nur diese – die übrigen übernimmt eine andere Bridge.
+Einstellbar in der Android-App („Für welche Lampen ist dieses Tablet zuständig?“) und in
+Home Assistant beim Gerät der jeweiligen Bridge („Zuständig für alle Lampen“ bzw.
+„Zuständig: <Lampe>“). Standard: alle Lampen.
+
 ## Hinweise
 
 - **Integrierter Bluetooth-Chip des Pi 4:** WLAN und Bluetooth teilen sich einen Chip, und 2,4-GHz-WLAN stört den BLE-Empfang. Besser per LAN-Kabel oder mit 5-GHz-WLAN betreiben, sonst einen USB-Bluetooth-Stick verwenden.

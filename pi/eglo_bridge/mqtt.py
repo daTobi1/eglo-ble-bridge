@@ -104,9 +104,14 @@ class MqttBridge:
         self.debug_topic = f"{t}/debug"
         self.debug_set = f"{t}/debug/set"
         self.mic_topic = f"{t}/mic"
+        #: which lamps this bridge is responsible for (per-bridge switches in HA)
+        self.lamp_assign = f"{t}/lamp"
+        self.all_assign = f"{t}/lamps_all"
 
         #: commands for the service: restart, reimport
         self.on_service_command: Callable[[str], None] | None = None
+        #: the lamp assignment was changed in Home Assistant (list of mesh ids, None = all)
+        self.on_assignment_changed: Callable[[list[int] | None], None] | None = None
         self.mic_state = ""
 
         self.client: paho.Client | None = None
@@ -248,6 +253,7 @@ class MqttBridge:
         # what we believed while offline is not on the broker: re-learn from retained messages
         self.lamp_avail.clear()
         topics = [f"{BASE}/bridge/+/status", f"{BASE}/bridge/+/info", self.cmd_topic, self.debug_set,
+                  f"{self.lamp_assign}/+/set", f"{self.all_assign}/set",
                   f"{BASE}/light/#", f"{BASE}/music/#", SENS, SENS_SET, SPEED, SPEED_SET,
                   f"{FIRE_SPEED}/#", f"{FIRE_STRENGTH}/#", f"{FIRE_BRIGHT}/#"]
         try:
@@ -262,6 +268,7 @@ class MqttBridge:
         self.mic_state = ""
         self._update_mic()
         self._publish_discovery()
+        self._publish_assignment()
         self.published.clear()  # force re-publish of link scores
         # give retained messages a moment to arrive, then decide ownership
         self.sched.post_delayed(2.5, lambda: (self._recompute(), self._ensure_selection_defaults()))
@@ -388,10 +395,60 @@ class MqttBridge:
                 "name": name, "unique_id": f"eglo_bridge_{bid}_{cmd}", "command_topic": self.cmd_topic,
                 "payload_press": cmd, "availability_topic": self.avail, "icon": icon,
                 "entity_category": "config", "device": bdev})
+        self._pub_json(f"homeassistant/switch/eglo_bridge_{bid}_lamps_all/config", {
+            "name": "Zuständig für alle Lampen", "unique_id": f"eglo_bridge_{bid}_lamps_all",
+            "command_topic": f"{self.all_assign}/set", "state_topic": self.all_assign,
+            "availability_topic": self.avail, "icon": "mdi:lightbulb-group", "entity_category": "config",
+            "device": bdev})
+        for d in (x for x in self.devices if x.is_light):
+            self._pub_json(f"homeassistant/switch/eglo_bridge_{bid}_lamp_{d.meshId}/config", {
+                "name": f"Zuständig: {d.name.strip()}", "unique_id": f"eglo_bridge_{bid}_lamp_{d.meshId}",
+                "command_topic": f"{self.lamp_assign}/{d.meshId}/set",
+                "state_topic": f"{self.lamp_assign}/{d.meshId}",
+                "availability_topic": self.avail, "icon": "mdi:lightbulb-on-outline",
+                "entity_category": "config", "device": bdev})
         self._pub_json(f"homeassistant/sensor/eglo_bridge_{bid}_mic/config", {
             "name": "Mikrofon", "unique_id": f"eglo_bridge_{bid}_mic", "state_topic": self.mic_topic,
             "availability_topic": self.avail, "icon": "mdi:microphone", "entity_category": "diagnostic",
             "device": bdev})
+
+    # ================================================================= lamp assignment
+
+    def _publish_assignment(self) -> None:
+        self._publish(self.all_assign, "ON" if self.mesh.assigned is None else "OFF", retain=True)
+        for d in (x for x in self.devices if x.is_light):
+            self._publish(f"{self.lamp_assign}/{d.meshId}",
+                          "ON" if self.mesh.is_responsible(d.meshId) else "OFF", retain=True)
+
+    def set_assignment(self, assigned: list[int] | None) -> None:
+        """Apply a new lamp assignment (None = all lamps), persist it and tell HA."""
+        lights = [d.meshId for d in self.devices if d.is_light]
+        if assigned is not None:
+            assigned = sorted({m for m in assigned if m in lights})
+        self.mesh.set_assigned(None if assigned is None else set(assigned))
+        self._publish_assignment()
+        self._recompute()
+        if self.on_assignment_changed is not None:
+            self.on_assignment_changed(assigned)
+
+    def _on_assign_message(self, mid: int | None, on: bool) -> None:
+        lights = [d.meshId for d in self.devices if d.is_light]
+        if mid is None:  # "all lamps" switch
+            if on:
+                self.set_assignment(None)
+            elif self.mesh.assigned is None:
+                # switching "all" off keeps the current lamps, but as an explicit list
+                # (new lamps from a later import are then not added automatically)
+                self.set_assignment(lights)
+            return
+        if mid not in lights:
+            return
+        current = set(lights) if self.mesh.assigned is None else set(self.mesh.assigned)
+        if on:
+            current.add(mid)
+        else:
+            current.discard(mid)
+        self.set_assignment(None if current >= set(lights) else sorted(current))
 
     def _publish_source_select(self, force: bool = False) -> None:
         """Select entity "Musikquelle" listing all bridges that can listen."""
@@ -662,6 +719,14 @@ class MqttBridge:
                 self.mesh.reconnect()
             elif self.on_service_command:
                 self.on_service_command(v)
+            return
+        if topic == f"{self.all_assign}/set":
+            self._on_assign_message(None, v.upper() == "ON")
+            return
+        if topic.startswith(self.lamp_assign + "/") and topic.endswith("/set"):
+            mid = _to_int(topic[len(self.lamp_assign) + 1:-len("/set")])
+            if mid is not None:
+                self._on_assign_message(mid, v.upper() == "ON")
             return
         if topic == self.debug_set:
             log.verbose = v.upper() == "ON"

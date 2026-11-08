@@ -130,6 +130,12 @@ class MeshConnection:
         if client is self.client and self.state in (State.PAIRING, State.PAIRED):
             self.close("Verbindung getrennt")
 
+    @staticmethod
+    def _err(err: BaseException) -> str:
+        """Readable error text - timeouts and some BlueZ errors have an empty message."""
+        text = str(err).strip()
+        return f"{type(err).__name__}: {text}" if text else type(err).__name__
+
     async def _gatt(self, name: str, coro_fn: Callable[[], Awaitable]):
         """Run one GATT operation exclusively, with a timeout like the Android op queue."""
         async with self._gatt_lock:
@@ -138,10 +144,10 @@ class MeshConnection:
             try:
                 return await asyncio.wait_for(coro_fn(), OP_TIMEOUT_S)
             except asyncio.TimeoutError:
-                self.close("GATT-Operation hängt")
+                self.close(f"GATT-Operation hängt ({name})")
                 raise asyncio.CancelledError from None
             except Exception as err:  # noqa: BLE001
-                self.close(f"{name} fehlgeschlagen ({err})")
+                self.close(f"{name} fehlgeschlagen ({self._err(err)})")
                 raise asyncio.CancelledError from None
 
     async def _connect(self, device: BLEDevice | str) -> None:
@@ -181,7 +187,7 @@ class MeshConnection:
             pass
         except Exception as err:  # noqa: BLE001
             if self.state != State.CLOSED:
-                self.close(f"Verbindungsfehler: {err}")
+                self.close(f"Verbindungsfehler: {self._err(err)}")
 
     async def _handle_pair_reply(self, client: BleakClient, status_char, value: bytes) -> None:
         if not value:
@@ -197,7 +203,7 @@ class MeshConnection:
                 # not fatal: commands still work. But without BlueZ notifications no status
                 # arrives at all - lamps then show as offline after 2 minutes. Say so loudly.
                 log.e(f"{self.mac}: Status-Benachrichtigungen nicht aktivierbar – Lampen werden "
-                      f"schalten, aber nach 2 min als offline gelten ({err})")
+                      f"schalten, aber nach 2 min als offline gelten ({self._err(err)})")
             if self.state == State.CLOSED:
                 return
             # AwoX/Telink: notifications are enabled by writing 0x01 to the status characteristic itself
@@ -271,11 +277,11 @@ class MeshConnection:
                 await asyncio.wait_for(client.write_gatt_char(CHAR_COMMAND, pkt, response=self._cmd_response),
                                        OP_TIMEOUT_S)
             except asyncio.TimeoutError:
-                self.close("GATT-Operation hängt")
+                self.close(f"GATT-Operation hängt ({name})")
             except asyncio.CancelledError:
                 raise
             except Exception as err:  # noqa: BLE001
                 if not client.is_connected:
-                    self.close(f"Verbindung verloren ({err})")
+                    self.close(f"Verbindung verloren ({self._err(err)})")
                 else:
-                    log.w(f"{self.mac}: {name} fehlgeschlagen ({err})")
+                    log.w(f"{self.mac}: {name} fehlgeschlagen ({self._err(err)})")

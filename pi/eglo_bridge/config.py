@@ -74,9 +74,14 @@ class Config:
     musicSensitivity: float = 1.0  # noqa: N815
     #: Bluetooth adapter, e.g. "hci0" (empty = default)
     adapter: str = ""
+    #: mesh ids of the lamps this bridge is responsible for; None = all lamps
+    assignedLamps: list[int] | None = None  # noqa: N815
     devices: list[MeshDevice] = field(default_factory=list)
 
     path: Path = field(default=DEFAULT_PATH, repr=False, compare=False)
+
+    def is_assigned(self, mesh_id: int) -> bool:
+        return self.assignedLamps is None or mesh_id in self.assignedLamps
 
     @property
     def is_complete(self) -> bool:
@@ -90,6 +95,8 @@ class Config:
             for k, v in raw.items():
                 if k == "devices":
                     cfg.devices = [MeshDevice.from_json(d) for d in v]
+                elif k == "assignedLamps":
+                    cfg.assignedLamps = None if v is None else [int(x) for x in v]
                 elif k != "path" and hasattr(cfg, k):
                     setattr(cfg, k, v)
         return cfg

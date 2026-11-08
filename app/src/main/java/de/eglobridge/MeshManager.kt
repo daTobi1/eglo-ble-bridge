@@ -83,7 +83,15 @@ class MeshManager(
     private var meshName = ByteArray(0)
     private var meshPassword = ByteArray(0)
     private var devices: List<MeshDevice> = emptyList()
-    private val lights get() = devices.filter { it.isLight }
+    /** Mesh ids of the lamps this bridge is responsible for; null = all. */
+    @Volatile private var assigned: Set<Int>? = null
+    /**
+     * Lamps this bridge is responsible for: only these get direct connections, are watched
+     * and are reported/controlled (the others are left to other bridges).
+     */
+    private val lights get() = devices.filter { it.isLight && isResponsible(it.meshId) }
+
+    fun isResponsible(meshId: Int): Boolean = assigned?.contains(meshId) ?: true
 
     private val connections = LinkedHashMap<String, MeshConnection>()
     private var connecting: MeshConnection? = null
@@ -120,12 +128,16 @@ class MeshManager(
             meshName = cfg.meshName.toByteArray()
             meshPassword = cfg.meshPassword.toByteArray()
             devices = cfg.devices
+            assigned = cfg.assignedLamps
             if (meshName.size > 16 || meshPassword.size > 16) {
                 BridgeLog.e("Mesh-Name/Passwort länger als 16 Bytes – ungültig")
                 return@post
             }
             running = true
-            BridgeLog.i("Mesh-Bridge startet mit ${lights.size} Lampen")
+            val total = devices.count { it.isLight }
+            if (assigned == null) BridgeLog.i("Mesh-Bridge startet mit $total Lampen")
+            else BridgeLog.i("Mesh-Bridge startet – zuständig für ${lights.size} von $total Lampen: " +
+                (lights.joinToString { it.name.trim() }.ifEmpty { "keine" }))
             publishState()
             scanAndConnect("Start")
             handler.postDelayed(tickRunnable, TICK_MS)
@@ -158,14 +170,55 @@ class MeshManager(
         }
     }
 
+    /** Change the lamps this bridge is responsible for (null = all) at runtime. */
+    fun setAssigned(newAssigned: Set<Int>?) {
+        handler.post {
+            val before = lights.map { it.meshId }.toSet()
+            assigned = newAssigned
+            val after = lights.map { it.meshId }.toSet()
+            if (before == after) return@post
+            val removed = before - after
+            val added = after - before
+            fun names(ids: Set<Int>) = ids.sorted().joinToString { deviceName(it) }
+            if (removed.isNotEmpty()) BridgeLog.i("Nicht mehr zuständig für: ${names(removed)}")
+            if (added.isNotEmpty()) BridgeLog.i("Jetzt zuständig für: ${names(added)}")
+            if (!running) return@post
+            for (id in removed) {
+                heardVia.remove(id)
+                lastSeen.remove(id)
+                online.remove(id)
+                listener.onDeviceOffline(id)
+            }
+            // direct links only to assigned lamps: drop the ones to lamps we gave away
+            val removedMacs = devices.filter { it.meshId in removed }.map { it.mac }.toSet()
+            for (mac in removedMacs) connections[mac]?.close("nicht mehr zuständig")
+            connecting?.takeIf { it.mac in removedMacs }?.close("nicht mehr zuständig")
+            candidates = ArrayDeque(candidates.filter { it !in removedMacs })
+            if (added.isNotEmpty()) {
+                futileScans = 0
+                val paired = connections.values.filter { it.isPaired }
+                paired.forEach { it.send(BROADCAST, C_REQUEST_STATUS, byteArrayOf(0x10)) }
+                if (paired.isEmpty() && connecting == null) {
+                    reconnectDelay = 3000L
+                    scheduleReconnect(1000L)
+                }
+            }
+            // the watch scan filters on the lamps' addresses: restart it with the new set
+            stopWatch()
+            ensureWatch()
+            publishState()
+        }
+    }
+
     /**
      * How well this bridge reaches a lamp (used to pick the bridge that controls it):
-     * 0 = not reachable, 100..199 = through the mesh, 200..299 = direct connection.
-     * Signal strength is bucketed to 10 dB so ownership does not flap.
+     * 0 = not reachable (or not assigned to this bridge), 100..199 = through the mesh,
+     * 200..299 = direct connection. Signal strength is bucketed to 10 dB so ownership does not flap.
      */
     fun linkScore(meshId: Int): Int {
         val now = SystemClock.elapsedRealtime()
         val d = devices.firstOrNull { it.meshId == meshId } ?: return 0
+        if (!isResponsible(meshId)) return 0
         fun rssiPart(mac: String): Int {
             val r = (lastRssi[mac] ?: -90).coerceIn(-99, -1)
             return 99 + (r / 10) * 10   // -45 -> 59, -85 -> 19
@@ -318,7 +371,8 @@ class MeshManager(
             return
         }
         if (lights.isEmpty()) {
-            BridgeLog.e("Keine Lampen konfiguriert – bitte zuerst aus der AwoX-Cloud importieren")
+            if (devices.any { it.isLight }) BridgeLog.w("Dieser Bridge ist keine Lampe zugeordnet – sie verbindet sich mit keiner Lampe")
+            else BridgeLog.e("Keine Lampen konfiguriert – bitte zuerst aus der AwoX-Cloud importieren")
             return
         }
         startScan(why) {
@@ -494,6 +548,7 @@ class MeshManager(
             if (BridgeLog.verbose) BridgeLog.w("Meldung von unbekannter Mesh-ID ${status.meshId}")
             return
         }
+        if (!isResponsible(status.meshId)) return  // another bridge reports this lamp
         if (status.online) {
             lastSeen[status.meshId] = SystemClock.elapsedRealtime()
             heardVia[status.meshId] = c.mac

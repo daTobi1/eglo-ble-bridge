@@ -90,6 +90,13 @@ class Config(context: Context) {
         get() = p.getString("musicSelection", null)?.split(',')?.mapNotNull { it.trim().toIntOrNull() }?.toSet()
         set(v) = p.edit().putString("musicSelection", v?.joinToString(",")).apply()
 
+    /** Mesh ids of the lamps this bridge is responsible for; null = all lamps. */
+    var assignedLamps: Set<Int>?
+        get() = p.getString("assignedLamps", null)?.split(',')?.mapNotNull { it.trim().toIntOrNull() }?.toSet()
+        set(v) = p.edit().putString("assignedLamps", v?.sorted()?.joinToString(",")).apply()
+
+    fun isAssigned(meshId: Int): Boolean = assignedLamps?.contains(meshId) ?: true
+
     // ---- kiosk
     var kioskEnabled: Boolean
         get() = p.getBoolean("kioskEnabled", false)

@@ -193,3 +193,38 @@ def test_stale_device_is_passed_as_mac(monkeypatch):
         m.running = False
 
     asyncio.run(run())
+
+
+def test_assignment_limits_connections_and_reports():
+    async def run():
+        # both lamps visible, they hear each other through the mesh
+        fake_ble.LAMPS["AA:00:00:00:00:03"] = fake_ble.FakeLamp("AA:00:00:00:00:03", 3, rssi=-50, relays=[5])
+        fake_ble.LAMPS["AA:00:00:00:00:05"] = fake_ble.FakeLamp("AA:00:00:00:00:05", 5, rssi=-80, relays=[3])
+        sched = Scheduler(asyncio.get_running_loop())
+        lst = Listener()
+        m = mesh.MeshManager(sched, lst)
+        cfg = _cfg((3, "Küche", "AA:00:00:00:00:03"), (5, "Wohnzimmer", "AA:00:00:00:00:05"))
+        cfg.assignedLamps = [5]
+        m.start(cfg)
+
+        # only the assigned lamp gets a connection although the other one is stronger
+        await _wait(lambda: 5 in lst.status)
+        assert set(m.connections) == {"AA:00:00:00:00:05"}
+        assert m.link_score(5) >= 200
+        await asyncio.sleep(0.3)
+        assert 3 not in lst.status          # status of the other lamp is ignored
+        assert m.link_score(3) == 0         # -> never owned by this bridge
+
+        # give lamp 5 away, take lamp 3: the link is moved
+        m.set_assigned({3})
+        assert 5 in lst.offline
+        await _wait(lambda: 3 in lst.status and "AA:00:00:00:00:03" in m.connections, timeout=8)
+        assert "AA:00:00:00:00:05" not in m.connections
+        assert m.link_score(5) == 0
+
+        # all lamps again
+        m.set_assigned(None)
+        await _wait(lambda: m.link_score(5) > 0, timeout=8)
+        await m.stop()
+
+    asyncio.run(run())

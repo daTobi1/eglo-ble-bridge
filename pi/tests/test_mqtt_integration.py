@@ -150,6 +150,22 @@ def test_bridge_end_to_end(broker, tmp_path, monkeypatch):
             await asyncio.sleep(0.3)
             await _wait(lambda: ha.msgs.get("eglo_bridge/bridge/pi_kueche/status") == "online")
 
+            # lamp assignment switches in HA: all lamps by default
+            await _wait(lambda: "homeassistant/switch/eglo_bridge_pi_kueche_lamp_3/config" in ha.msgs)
+            await _wait(lambda: ha.msgs.get("eglo_bridge/bridge/pi_kueche/lamps_all") == "ON")
+            assert ha.msgs.get("eglo_bridge/bridge/pi_kueche/lamp/3") == "ON"
+            # untick the lamp: the Pi gives it up, saves that and the lamp becomes unavailable
+            ha.pub("eglo_bridge/bridge/pi_kueche/lamp/3/set", "OFF")
+            await _wait(lambda: ha.msgs.get("eglo_bridge/bridge/pi_kueche/lamp/3") == "OFF")
+            assert ha.msgs["eglo_bridge/bridge/pi_kueche/lamps_all"] == "OFF"
+            await _wait(lambda: ha.msgs.get("eglo_bridge/light/3/link/pi_kueche") == "0")
+            await _wait(lambda: ha.msgs.get("eglo_bridge/light/3/availability") == "offline")
+            assert Config.load(cfg.path).assignedLamps == []
+            # "all lamps" on again
+            ha.pub("eglo_bridge/bridge/pi_kueche/lamps_all/set", "ON")
+            await _wait(lambda: ha.msgs.get("eglo_bridge/light/3/availability") == "online", timeout=15)
+            assert Config.load(cfg.path).assignedLamps is None
+
             # HA button "reconnect"
             ha.pub("eglo_bridge/bridge/pi_kueche/cmd", "reconnect")
             await _wait(lambda: "Neuverbindung" in " ".join(entry.log.snapshot()[-20:]))

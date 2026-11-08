@@ -19,6 +19,14 @@ Android-App, die ein altes Tablet zur **Brücke zwischen EGLO-Connect/AwoX-Bluet
 
 Die Lampen erscheinen in Home Assistant unter *Einstellungen → Geräte & Dienste → MQTT*.
 
+## Zuständigkeit mehrerer Bridges
+
+Jede Bridge (Tablet, Pi) kann auf bestimmte Lampen beschränkt werden: Sie verbindet sich dann nur
+mit diesen Lampen und steuert/meldet nur diese – die übrigen übernimmt eine andere Bridge.
+Einstellbar in der Android-App („Für welche Lampen ist dieses Tablet zuständig?“) und in
+Home Assistant beim Gerät der jeweiligen Bridge („Zuständig für alle Lampen“ bzw.
+„Zuständig: <Lampe>“). Standard: alle Lampen.
+
 ## Hinweise
 
 - Die alte HA-Integration „AwoX MESH control“ sollte deaktiviert werden, da die Lampen nur wenige gleichzeitige Verbindungen erlauben.

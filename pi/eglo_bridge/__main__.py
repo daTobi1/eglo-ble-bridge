@@ -52,6 +52,7 @@ class Bridge:
         self.mqtt = MqttBridge(self.sched, self.mesh, self.lights, __version__, slug(cfg.bridgeName),
                                cfg.bridgeName, has_mic)
         self.mqtt.on_service_command = self._on_service_command
+        self.mqtt.on_assignment_changed = self._save_assignment
         self.mqtt.start(cfg)
         log.listeners.append(self._log_listener)
         self.mesh.start(cfg)
@@ -87,6 +88,16 @@ class Bridge:
             self.lights.set_available(mesh_id, False)
 
     # ---------------------------------------------------------------- commands from HA
+
+    def _save_assignment(self, assigned: list[int] | None) -> None:
+        cfg = Config.load(self.config_path)
+        if cfg.assignedLamps == assigned:
+            return
+        cfg.assignedLamps = assigned
+        try:
+            cfg.save()
+        except OSError as err:
+            log.e("Zuordnung der Lampen konnte nicht gespeichert werden", err)
 
     def _on_service_command(self, cmd: str) -> None:
         if cmd == "restart":
@@ -183,7 +194,10 @@ def _print_devices(cfg: Config) -> None:
     for d in cfg.devices:
         kind = ", ".join(k for k, on in (("Farbe", d.has_color), ("Weißton", d.has_temperature),
                                          ("dimmbar", d.has_dimming)) if on) or "-"
-        print(f"  #{d.meshId:<4} {d.name.strip():<28} {d.mac}  {d.model}  ({kind})")
+        mark = "x" if not d.is_light or cfg.is_assigned(d.meshId) else " "
+        print(f"  [{mark}] #{d.meshId:<4} {d.name.strip():<28} {d.mac}  {d.model}  ({kind})")
+    if cfg.assignedLamps is not None:
+        print("  [x] = diese Bridge ist zuständig (in Home Assistant unter der Bridge änderbar)")
 
 
 async def _scan(path: Path, seconds: float) -> int:

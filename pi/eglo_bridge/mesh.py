@@ -117,6 +117,8 @@ class MeshManager:
         self.mesh_name = b""
         self.mesh_password = b""
         self.devices: list[MeshDevice] = []
+        #: mesh ids of the lamps this bridge is responsible for; None = all
+        self.assigned: set[int] | None = None
 
         self.connections: dict[str, MeshConnection] = {}
         self.connecting: MeshConnection | None = None
@@ -150,7 +152,12 @@ class MeshManager:
 
     @property
     def lights(self) -> list[MeshDevice]:
-        return [d for d in self.devices if d.is_light]
+        """Lamps this bridge is responsible for: only these get direct connections,
+        are watched and are reported/controlled (others are left to other bridges)."""
+        return [d for d in self.devices if d.is_light and self.is_responsible(d.meshId)]
+
+    def is_responsible(self, mesh_id: int) -> bool:
+        return self.assigned is None or mesh_id in self.assigned
 
     def _paired(self) -> list[MeshConnection]:
         return [c for c in self.connections.values() if c.is_paired]
@@ -161,11 +168,17 @@ class MeshManager:
         self.mesh_name = cfg.meshName.encode()
         self.mesh_password = cfg.meshPassword.encode()
         self.devices = list(cfg.devices)
+        self.assigned = None if cfg.assignedLamps is None else set(cfg.assignedLamps)
         if len(self.mesh_name) > 16 or len(self.mesh_password) > 16:
             log.e("Mesh-Name/Passwort länger als 16 Bytes – ungültig")
             return
         self.running = True
-        log.i(f"Mesh-Bridge startet mit {len(self.lights)} Lampen")
+        total = sum(1 for d in self.devices if d.is_light)
+        if self.assigned is None:
+            log.i(f"Mesh-Bridge startet mit {total} Lampen")
+        else:
+            log.i(f"Mesh-Bridge startet – zuständig für {len(self.lights)} von {total} Lampen: "
+                  + (", ".join(d.name.strip() for d in self.lights) or "keine"))
         self._publish_state()
         self._scan_and_connect("Start")
         self.sched.post_delayed(TICK_S, self._tick, key="mesh-tick")
@@ -200,12 +213,56 @@ class MeshManager:
         self.reconnect_delay = 3.0
         self._schedule_reconnect(1.5)
 
+    def set_assigned(self, assigned: set[int] | None) -> None:
+        """Change the lamps this bridge is responsible for (None = all) at runtime."""
+        before = {d.meshId for d in self.lights}
+        self.assigned = None if assigned is None else set(assigned)
+        after = {d.meshId for d in self.lights}
+        if before == after:
+            return
+        removed, added = before - after, after - before
+        names = lambda ids: ", ".join(self.device_name(i) for i in sorted(ids))  # noqa: E731
+        if removed:
+            log.i(f"Nicht mehr zuständig für: {names(removed)}")
+        if added:
+            log.i(f"Jetzt zuständig für: {names(added)}")
+        if not self.running:
+            return
+        for mid in removed:
+            self.heard_via.pop(mid, None)
+            self.last_seen.pop(mid, None)
+            if mid in self.online:
+                self.online.discard(mid)
+            self.listener.on_device_offline(mid)
+        # direct links only to assigned lamps: drop the ones to lamps we gave away
+        removed_macs = {d.mac for d in self.devices if d.meshId in removed}
+        for mac in removed_macs:
+            c = self.connections.get(mac)
+            if c is not None:
+                c.close("nicht mehr zuständig")
+        if self.connecting is not None and self.connecting.mac in removed_macs:
+            self.connecting.close("nicht mehr zuständig")
+        self.candidates = deque(m for m in self.candidates if m not in removed_macs)
+        if added:
+            self.futile_scans = 0
+            for c in self._paired():
+                c.send(BROADCAST, C_REQUEST_STATUS, b"\x10")
+            if not self._paired() and self.connecting is None:
+                self.reconnect_delay = 3.0
+                self._schedule_reconnect(1.0)
+        if not self.lights:
+            self._stop_watch()
+        else:
+            self._ensure_watch()
+        self._publish_state()
+
     def link_score(self, mesh_id: int) -> int:
         """How well this bridge reaches a lamp (used to pick the bridge that controls it):
-        0 = not reachable, 100..199 = through the mesh, 200..299 = direct connection.
-        Signal strength is bucketed to 10 dB so ownership does not flap."""
+        0 = not reachable (or not assigned to this bridge), 100..199 = through the mesh,
+        200..299 = direct connection. Signal strength is bucketed to 10 dB so ownership
+        does not flap."""
         d = next((x for x in self.devices if x.meshId == mesh_id), None)
-        if d is None:
+        if d is None or not self.is_responsible(mesh_id):
             return 0
 
         def rssi_part(mac: str) -> int:
@@ -401,7 +458,10 @@ class MeshManager:
         if not self.running or self.connecting is not None or self.scanning:
             return
         if not self.lights:
-            log.e("Keine Lampen konfiguriert – bitte zuerst aus der AwoX-Cloud importieren")
+            if any(d.is_light for d in self.devices):
+                log.w("Dieser Bridge ist keine Lampe zugeordnet – sie verbindet sich mit keiner Lampe")
+            else:
+                log.e("Keine Lampen konfiguriert – bitte zuerst aus der AwoX-Cloud importieren")
             return
 
         def after() -> None:
@@ -546,6 +606,8 @@ class MeshManager:
             if log.verbose:
                 log.w(f"Meldung von unbekannter Mesh-ID {status.mesh_id}")
             return
+        if not self.is_responsible(status.mesh_id):
+            return  # another bridge reports this lamp
         if status.online:
             self.last_seen[status.mesh_id] = _now()
             self.heard_via[status.mesh_id] = c.mac
