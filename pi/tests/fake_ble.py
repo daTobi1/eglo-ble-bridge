@@ -28,6 +28,10 @@ class FakeLamp:
     color_mode: bool = False
     rgb: tuple = (255, 255, 255)
     connected: bool = False
+    #: start_notify fails this many times (BlueZ timeout) before it works
+    notify_failures: int = 0
+    #: lamp stops sending status notifications (stale link)
+    silent: bool = False
 
 
 LAMPS: dict[str, FakeLamp] = {}
@@ -124,7 +128,7 @@ class FakeClient:
                         asyncio.get_running_loop().call_later(0.01, self._send_status, mid)
 
     def _send_status(self, mid: int) -> None:
-        if self._notify is None or self.key is None:
+        if self._notify is None or self.key is None or self.lamp.silent:
             return
         p = bytearray(20)
         p[0:3] = os.urandom(3)
@@ -148,6 +152,9 @@ class FakeClient:
         return bytearray()
 
     async def start_notify(self, char, cb):
+        if self.lamp.notify_failures > 0:
+            self.lamp.notify_failures -= 1
+            raise TimeoutError()
         self._notify = cb
 
 

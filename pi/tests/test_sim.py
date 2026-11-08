@@ -228,3 +228,55 @@ def test_assignment_limits_connections_and_reports():
         await m.stop()
 
     asyncio.run(run())
+
+
+def test_notify_retry_and_reconnect_when_notifications_fail():
+    async def run():
+        # first attempt fails, second works -> same connection stays
+        lamp = fake_ble.FakeLamp("AA:00:00:00:00:03", 3, rssi=-50, notify_failures=1)
+        fake_ble.LAMPS[lamp.mac] = lamp
+        sched = Scheduler(asyncio.get_running_loop())
+        lst = Listener()
+        m = mesh.MeshManager(sched, lst)
+        m.start(_cfg((3, "Küche", lamp.mac)))
+        await _wait(lambda: 3 in lst.status, timeout=8)
+        await m.stop()
+
+        # all attempts fail -> the link is rebuilt instead of staying without status
+        lst2 = Listener()
+        lamp.notify_failures = connection.NOTIFY_ATTEMPTS
+        m2 = mesh.MeshManager(sched, lst2)
+        closed = []
+        orig = m2.on_closed
+        m2.on_closed = lambda c, was, reason: (closed.append(reason), orig(c, was, reason))[1]
+        m2.start(_cfg((3, "Küche", lamp.mac)))
+        await _wait(lambda: 3 in lst2.status, timeout=15)
+        assert any("Status-Benachrichtigungen" in r for r in closed)
+        await m2.stop()
+
+    asyncio.run(run())
+
+
+def test_silent_link_is_rebuilt(monkeypatch):
+    monkeypatch.setattr(mesh, "TICK_S", 0.3)
+    monkeypatch.setattr(mesh, "RX_SILENT_S", 1.0)
+
+    async def run():
+        lamp = fake_ble.FakeLamp("AA:00:00:00:00:03", 3, rssi=-50)
+        fake_ble.LAMPS[lamp.mac] = lamp
+        sched = Scheduler(asyncio.get_running_loop())
+        lst = Listener()
+        m = mesh.MeshManager(sched, lst)
+        closed = []
+        orig = m.on_closed
+        m.on_closed = lambda c, was, reason: (closed.append(reason), orig(c, was, reason))[1]
+        m.start(_cfg((3, "Küche", lamp.mac)))
+        await _wait(lambda: 3 in lst.status)
+        lamp.silent = True
+        await _wait(lambda: "keine Rückmeldung der Lampe" in closed, timeout=6)
+        lamp.silent = False
+        lst.status.clear()
+        await _wait(lambda: 3 in lst.status and m._paired(), timeout=10)
+        await m.stop()
+
+    asyncio.run(run())

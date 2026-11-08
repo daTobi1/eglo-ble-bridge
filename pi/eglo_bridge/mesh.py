@@ -48,6 +48,9 @@ MISSING_AFTER_S = 60.0
 OFFLINE_AFTER_S = 120.0
 WATCH_REACT_S = 15.0
 MIN_RSSI = -97
+#: a paired link that delivers nothing for this long (status is polled every TICK_S) is
+#: rebuilt instead of letting the lamps time out as "offline"
+RX_SILENT_S = 50.0
 #: the watch scan is duty-cycled: full-time active discovery on the Pi's combined
 #: WLAN/BT chip hurts the BLE links and WLAN (Android used SCAN_MODE_LOW_POWER)
 WATCH_ON_S = 5.0
@@ -312,9 +315,14 @@ class MeshManager:
             return
         self.tick += 1
         paired = self._paired()
+        now = _now()
+        for c in paired:
+            if now - c.last_rx > RX_SILENT_S:
+                log.w(f"{self._name_for_mac(c.mac)}: seit {int(now - c.last_rx)} s keine Rückmeldung – verbinde neu")
+                c.close("keine Rückmeldung der Lampe")
+        paired = self._paired()
         for c in paired:
             c.send(BROADCAST, C_REQUEST_STATUS, b"\x10")
-        now = _now()
         for mid in list(self.online):
             if now - self.last_seen.get(mid, 0.0) > OFFLINE_AFTER_S:
                 self.online.discard(mid)

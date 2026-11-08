@@ -74,6 +74,8 @@ class MeshManager(
         private const val OFFLINE_AFTER_MS = 2 * 60 * 1000L
         private const val WATCH_REACT_MS = 15 * 1000L
         private const val MIN_RSSI = -97
+        /** A paired link that delivers nothing this long (status is polled every TICK_MS) is rebuilt. */
+        private const val RX_SILENT_MS = 50 * 1000L
     }
 
     private val btManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
@@ -260,6 +262,13 @@ class MeshManager(
         override fun run() {
             if (!running) return
             tick++
+            val nowRx = SystemClock.elapsedRealtime()
+            for (c in connections.values.filter { it.isPaired }) {
+                if (nowRx - c.lastRx > RX_SILENT_MS) {
+                    BridgeLog.w("${nameForMac(c.mac)}: seit ${(nowRx - c.lastRx) / 1000} s keine Rückmeldung – verbinde neu")
+                    c.close("keine Rückmeldung der Lampe")
+                }
+            }
             val paired = connections.values.filter { it.isPaired }
             if (paired.isNotEmpty()) {
                 paired.forEach { it.send(BROADCAST, C_REQUEST_STATUS, byteArrayOf(0x10)) }

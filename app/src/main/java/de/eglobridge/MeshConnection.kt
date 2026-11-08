@@ -67,6 +67,10 @@ class MeshConnection(
     private var pumpScheduled = false
 
     val isPaired get() = state == State.PAIRED
+
+    /** elapsedRealtime of the last notification from the lamp (watchdog in MeshManager). */
+    var lastRx = 0L
+        private set
     val isClosed get() = state == State.CLOSED
 
     // ------------------------------------------------------------------ lifecycle
@@ -212,6 +216,7 @@ class MeshConnection(
                 if (c.uuid != CHAR_STATUS) return@post
                 val key = sessionKey ?: return@post
                 if (value.size < 20) return@post
+                lastRx = SystemClock.elapsedRealtime()
                 events.onPacket(this@MeshConnection, MeshCrypto.decryptPacket(key, mac, value))
             }
         }
@@ -227,7 +232,10 @@ class MeshConnection(
                     meshName, meshPassword, sessionRandom, value.copyOfRange(1, minOf(9, value.size))
                 )
                 val sc = statusChar ?: run { close("Status-Charakteristik fehlt"); return }
-                gatt?.setCharacteristicNotification(sc, true)
+                if (gatt?.setCharacteristicNotification(sc, true) != true) {
+                    // without notifications no status arrives and the lamps would turn "offline"
+                    close("Status-Benachrichtigungen nicht aktivierbar"); return
+                }
                 // AwoX/Telink: notifications are enabled by writing 0x01 to the status characteristic itself
                 write(sc, byteArrayOf(0x01), "notify-enable")
                 enqueueOp("paired") {
@@ -235,6 +243,7 @@ class MeshConnection(
                         opDone()
                         handler.removeCallbacks(connectTimeout)
                         state = State.PAIRED
+                        lastRx = SystemClock.elapsedRealtime()  // watchdog grace period starts now
                         BridgeLog.i("Mesh-Anmeldung an $mac erfolgreich")
                         events.onPaired(this)
                         pump()
