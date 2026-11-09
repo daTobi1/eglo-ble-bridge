@@ -24,6 +24,7 @@ class Bridge:
         self.mesh = None
         self.lights = None
         self.mqtt = None
+        self.screen = None
         self.stopped = asyncio.Event()
         #: process exit code; non-zero lets systemd (Restart=on-failure) start us again
         self.exit_code = 0
@@ -38,6 +39,7 @@ class Bridge:
         from .lights import LightController
         from .mesh import MeshManager
         from .mqtt import MqttBridge, slug
+        from .screen import Screen
 
         cfg = Config.load(self.config_path)
         if not cfg.is_complete:
@@ -55,6 +57,12 @@ class Bridge:
                                cfg.bridgeName, has_mic)
         self.mqtt.on_service_command = self._on_service_command
         self.mqtt.on_assignment_changed = self._save_assignment
+        self.screen = Screen.detect(self.sched)
+        self.screen.start(cfg.screenTimeout, cfg.screenBrightness)
+        if self.screen.available:
+            self.mqtt.screen = self.screen
+            self.screen.on_change = self.mqtt.publish_screen
+            self.screen.on_settings_changed = self._save_screen
         self.mqtt.start(cfg)
         log.listeners.append(self._log_listener)
         self.mesh.start(cfg)
@@ -63,6 +71,8 @@ class Bridge:
     async def stop(self) -> None:
         if self._log_listener in log.listeners:
             log.listeners.remove(self._log_listener)
+        if self.screen is not None:
+            self.screen.stop()
         if self.lights is not None:
             self.lights.shutdown()
         if self.mesh is not None:
@@ -71,7 +81,7 @@ class Bridge:
             self.lights.mark_all_offline()
         if self.mqtt is not None:
             await self.mqtt.stop()
-        self.mesh = self.lights = self.mqtt = None
+        self.mesh = self.lights = self.mqtt = self.screen = None
 
     # ---------------------------------------------------------------- MeshListener
 
@@ -100,6 +110,25 @@ class Bridge:
             cfg.save()
         except OSError as err:
             log.e("Zuordnung der Lampen konnte nicht gespeichert werden", err)
+
+    def _save_screen(self) -> None:
+        sc = self.screen
+        if sc is None:
+            return
+        # debounce: a slider in HA sends many values
+        self.sched.remove("save-screen")
+        self.sched.post_delayed(2.0, lambda: self._write_screen(sc.timeout_min, sc.brightness_pct), key="save-screen")
+
+    def _write_screen(self, timeout_min: int, brightness_pct: int) -> None:
+        cfg = Config.load(self.config_path)
+        if cfg.screenTimeout == timeout_min and cfg.screenBrightness == brightness_pct:
+            return
+        cfg.screenTimeout = timeout_min
+        cfg.screenBrightness = brightness_pct
+        try:
+            cfg.save()
+        except OSError as err:
+            log.e("Bildschirm-Einstellungen konnten nicht gespeichert werden", err)
 
     def _on_service_command(self, cmd: str) -> None:
         if cmd == "restart":

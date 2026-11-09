@@ -7,7 +7,8 @@ After=network-online.target bluetooth.service
 Type=simple
 User=eglo-bridge
 Group=eglo-bridge
-SupplementaryGroups=bluetooth audio
+# video: display backlight, input: touch wakes the display (install.sh drops missing groups)
+SupplementaryGroups=bluetooth audio video input
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/opt/eglo-bridge/venv/bin/eglo-bridge run
 Restart=on-failure

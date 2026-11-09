@@ -78,6 +78,10 @@ class Config:
     bleBackend: str = "att"  # noqa: N815
     #: mesh ids of the lamps this bridge is responsible for; None = all lamps
     assignedLamps: list[int] | None = None  # noqa: N815
+    #: display (Pi touch panel): minutes without touch until the backlight goes off, 0 = never
+    screenTimeout: int = 0  # noqa: N815
+    #: display brightness in percent
+    screenBrightness: int = 80  # noqa: N815
     devices: list[MeshDevice] = field(default_factory=list)
 
     path: Path = field(default=DEFAULT_PATH, repr=False, compare=False)
