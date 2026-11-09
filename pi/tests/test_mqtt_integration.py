@@ -91,6 +91,14 @@ def test_bridge_end_to_end(broker, tmp_path, monkeypatch):
     fake_ble.LAMPS.clear()
     lamp = fake_ble.FakeLamp("AA:00:00:00:00:03", 3, rssi=-55)
     fake_ble.LAMPS[lamp.mac] = lamp
+    from eglo_bridge import screen as screen_mod
+    bl = tmp_path / "backlight"
+    bl.mkdir()
+    (bl / "max_brightness").write_text("255")
+    (bl / "brightness").write_text("255")
+    (bl / "bl_power").write_text("0")
+    monkeypatch.setattr(screen_mod, "find_backlight", lambda: bl)
+    monkeypatch.setattr(screen_mod, "find_touch_devices", lambda: [])
 
     cfg = Config(path=tmp_path / "config.json", meshName=fake_ble.MESH_NAME.decode(),
                  meshPassword=fake_ble.MESH_PASS.decode(), mqttHost="127.0.0.1", mqttPort=broker,
@@ -165,6 +173,24 @@ def test_bridge_end_to_end(broker, tmp_path, monkeypatch):
             ha.pub("eglo_bridge/bridge/pi_kueche/lamps_all/set", "ON")
             await _wait(lambda: ha.msgs.get("eglo_bridge/light/3/availability") == "online", timeout=15)
             assert Config.load(cfg.path).assignedLamps is None
+
+            # display entities (same as the Android kiosk)
+            await _wait(lambda: "homeassistant/switch/eglo_bridge_pi_kueche_screen/config" in ha.msgs)
+            assert "homeassistant/number/eglo_bridge_pi_kueche_brightness/config" in ha.msgs
+            disc = json.loads(ha.msgs["homeassistant/number/eglo_bridge_pi_kueche_screen_timeout/config"])
+            assert disc["command_topic"] == "eglo_bridge/bridge/pi_kueche/screen_timeout/set"
+            await _wait(lambda: ha.msgs.get("eglo_bridge/bridge/pi_kueche/screen") == "ON")
+            ha.pub("eglo_bridge/bridge/pi_kueche/screen/set", "OFF")
+            await _wait(lambda: ha.msgs.get("eglo_bridge/bridge/pi_kueche/screen") == "OFF")
+            assert (bl / "bl_power").read_text() == "4"
+            ha.pub("eglo_bridge/bridge/pi_kueche/screen/set", "ON")
+            await _wait(lambda: ha.msgs.get("eglo_bridge/bridge/pi_kueche/screen") == "ON")
+            ha.pub("eglo_bridge/bridge/pi_kueche/screen_timeout/set", "5")
+            ha.pub("eglo_bridge/bridge/pi_kueche/brightness/set", "40")
+            await _wait(lambda: ha.msgs.get("eglo_bridge/bridge/pi_kueche/brightness") == "40")
+            assert (bl / "brightness").read_text() == "102"
+            await _wait(lambda: Config.load(cfg.path).screenTimeout == 5, timeout=5)
+            assert Config.load(cfg.path).screenBrightness == 40
 
             # HA button "reconnect"
             ha.pub("eglo_bridge/bridge/pi_kueche/cmd", "reconnect")

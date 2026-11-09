@@ -107,6 +107,11 @@ class MqttBridge:
         #: which lamps this bridge is responsible for (per-bridge switches in HA)
         self.lamp_assign = f"{t}/lamp"
         self.all_assign = f"{t}/lamps_all"
+        #: display control (only when the Pi has a backlight, see screen.py)
+        self.screen_topic = f"{t}/screen"
+        self.brightness_topic = f"{t}/brightness"
+        self.screen_timeout_topic = f"{t}/screen_timeout"
+        self.screen = None
 
         #: commands for the service: restart, reimport
         self.on_service_command: Callable[[str], None] | None = None
@@ -256,6 +261,8 @@ class MqttBridge:
                   f"{self.lamp_assign}/+/set", f"{self.all_assign}/set",
                   f"{BASE}/light/#", f"{BASE}/music/#", SENS, SENS_SET, SPEED, SPEED_SET,
                   f"{FIRE_SPEED}/#", f"{FIRE_STRENGTH}/#", f"{FIRE_BRIGHT}/#"]
+        if self._has_screen:
+            topics += [f"{self.screen_topic}/set", f"{self.brightness_topic}/set", f"{self.screen_timeout_topic}/set"]
         try:
             self.client.subscribe([(t, 0) for t in topics])
         except Exception as err:  # noqa: BLE001
@@ -269,6 +276,7 @@ class MqttBridge:
         self._update_mic()
         self._publish_discovery()
         self._publish_assignment()
+        self.publish_screen()
         self.published.clear()  # force re-publish of link scores
         # give retained messages a moment to arrive, then decide ownership
         self.sched.post_delayed(2.5, lambda: (self._recompute(), self._ensure_selection_defaults()))
@@ -411,6 +419,59 @@ class MqttBridge:
             "name": "Mikrofon", "unique_id": f"eglo_bridge_{bid}_mic", "state_topic": self.mic_topic,
             "availability_topic": self.avail, "icon": "mdi:microphone", "entity_category": "diagnostic",
             "device": bdev})
+        if self._has_screen:
+            self._publish_screen_discovery(bdev)
+
+    # ================================================================= display (Pi with touch panel)
+
+    @property
+    def _has_screen(self) -> bool:
+        return self.screen is not None and self.screen.available
+
+    def _publish_screen_discovery(self, bdev: dict) -> None:
+        bid = self.bridge_id
+        # same entities as the kiosk screen of the Android app
+        self._pub_json(f"homeassistant/switch/eglo_bridge_{bid}_screen/config", {
+            "name": "Bildschirm", "unique_id": f"eglo_bridge_{bid}_screen",
+            "command_topic": f"{self.screen_topic}/set", "state_topic": self.screen_topic,
+            "availability_topic": self.avail, "icon": "mdi:tablet-dashboard", "device": bdev})
+        self._pub_json(f"homeassistant/number/eglo_bridge_{bid}_brightness/config", {
+            "name": "Bildschirmhelligkeit", "unique_id": f"eglo_bridge_{bid}_brightness",
+            "command_topic": f"{self.brightness_topic}/set", "state_topic": self.brightness_topic,
+            "min": 1, "max": 100, "step": 1, "mode": "slider", "unit_of_measurement": "%",
+            "availability_topic": self.avail, "icon": "mdi:brightness-6", "device": bdev})
+        self._pub_json(f"homeassistant/number/eglo_bridge_{bid}_screen_timeout/config", {
+            "name": "Bildschirm aus nach", "unique_id": f"eglo_bridge_{bid}_screen_timeout",
+            "command_topic": f"{self.screen_timeout_topic}/set", "state_topic": self.screen_timeout_topic,
+            "min": 0, "max": 120, "step": 1, "mode": "box", "unit_of_measurement": "min",
+            "availability_topic": self.avail, "icon": "mdi:timer-outline", "entity_category": "config",
+            "device": bdev})
+
+    def publish_screen(self) -> None:
+        """Publish the display state (called by Screen.on_change)."""
+        if not self._has_screen or not self.connected:
+            return
+        sc = self.screen
+        self._publish(self.screen_topic, "ON" if sc.on else "OFF", retain=True, qos=1)
+        self._publish(self.brightness_topic, str(sc.brightness_pct), retain=True, qos=1)
+        self._publish(self.screen_timeout_topic, str(sc.timeout_min), retain=True, qos=1)
+
+    def _on_screen_message(self, topic: str, v: str) -> bool:
+        if not self._has_screen:
+            return False
+        if topic == f"{self.screen_topic}/set":
+            self.screen.set_screen(v.upper() == "ON")
+        elif topic == f"{self.brightness_topic}/set":
+            n = _to_int(v)
+            if n is not None:
+                self.screen.set_brightness(n)
+        elif topic == f"{self.screen_timeout_topic}/set":
+            n = _to_int(v)
+            if n is not None:
+                self.screen.set_timeout(n)
+        else:
+            return False
+        return True
 
     # ================================================================= lamp assignment
 
@@ -719,6 +780,8 @@ class MqttBridge:
                 self.mesh.reconnect()
             elif self.on_service_command:
                 self.on_service_command(v)
+            return
+        if self._on_screen_message(topic, v):
             return
         if topic == f"{self.all_assign}/set":
             self._on_assign_message(None, v.upper() == "ON")

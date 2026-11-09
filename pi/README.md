@@ -7,7 +7,9 @@ Die gleiche Brücke wie die Android-App: Sie verbindet EGLO-Connect/AwoX-Bluetoo
 - bis zu 3 direkte BLE-Verbindungen, schnelles Wiederfinden nach Stromausfall, Lagerfeuer-Effekt, Favoriten
 - Musikmodus: Der Pi wendet die Musik-Frames einer Tablet-Bridge an; mit USB-Mikrofon kann er auch selbst zuhören (optional)
 
-Nicht enthalten (gibt es nur auf dem Tablet): Kiosk-Bildschirm, Akku-Sensoren, APK-Update. Für ein Wandpanel mit Pi-Display eignet sich TouchKio.
+- Bildschirmsteuerung für ein Pi-Wandpanel mit Touch-Display: Die Hintergrundbeleuchtung geht nach einer einstellbaren Zeit aus, und ein Fingertipp weckt sie wieder (siehe unten).
+
+Nicht enthalten (gibt es nur auf dem Tablet): Kiosk-Browser, Akku-Sensoren, APK-Update. Als Kiosk-Browser auf dem Pi eignet sich z. B. TouchKio oder Chromium im Kiosk-Modus.
 
 ## Installation
 
@@ -40,6 +42,18 @@ Anschließend startet der Dienst `eglo-bridge` und läuft künftig automatisch b
 | Mikrofon-Unterstützung | `sudo ./install.sh music` |
 
 Die Konfiguration liegt in `/etc/eglo-bridge/config.json` (nur für `eglo-bridge` lesbar, weil sie Passwörter enthält). Ein zweiter Bluetooth-Adapter lässt sich dort mit `"adapter": "hci1"` auswählen.
+
+## Bildschirm (Pi mit Touch-Display)
+
+Hat der Pi ein Display mit steuerbarer Hintergrundbeleuchtung (offizielles Raspberry-Pi-Touch-Display und die meisten DSI-Panels, zu finden unter `/sys/class/backlight`), bekommt das Bridge-Gerät in Home Assistant dieselben Entitäten wie ein Tablet:
+
+| Entität | Funktion |
+|---|---|
+| **Bildschirm** (Schalter) | Hintergrundbeleuchtung an/aus, z. B. per Automation (Bewegungsmelder, Türklingel, Babyphone) |
+| **Bildschirmhelligkeit** (1–100 %) | Helligkeit des Displays |
+| **Bildschirm aus nach** (0–120 min) | Ohne Berührung geht das Licht nach dieser Zeit aus; `0` = nie |
+
+Ein Fingertipp aufs dunkle Display schaltet es wieder ein. Dieser erste Tipp wird abgefangen und löst nichts auf dem Dashboard aus. Zeit und Helligkeit werden in der Konfiguration gespeichert. Wird die Bridge beendet, schaltet sie das Display wieder ein. `install.sh` (auch `update`) gibt dem Dienst über eine udev-Regel und die Gruppen `video` und `input` die nötigen Rechte. HDMI-Monitore haben keine Hintergrundbeleuchtung unter `/sys/class/backlight`; dort bleibt die Funktion aus.
 
 ## Zuständigkeit mehrerer Bridges
 

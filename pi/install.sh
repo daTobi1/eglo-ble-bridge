@@ -18,6 +18,26 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
+screen_access() {
+  # display control: backlight via sysfs (group video), touch wake-up via /dev/input (group input)
+  getent group video >/dev/null && usermod -aG video "$SVC_USER"
+  getent group input >/dev/null && usermod -aG input "$SVC_USER"
+  cat > /etc/udev/rules.d/90-eglo-bridge-backlight.rules <<'RULES'
+# EGLO BLE Bridge: let the video group switch and dim the display backlight
+SUBSYSTEM=="backlight", RUN+="/bin/sh -c 'chgrp video /sys%p/brightness /sys%p/bl_power; chmod g+w /sys%p/brightness /sys%p/bl_power'"
+RULES
+  udevadm control --reload-rules || true
+  udevadm trigger --subsystem-match=backlight || true
+}
+
+install_service() {
+  install -m 644 "$SRC/eglo-bridge.service" /etc/systemd/system/eglo-bridge.service
+  local groups="bluetooth"
+  for g in audio video input; do getent group "$g" >/dev/null && groups="$groups $g"; done
+  sed -i "s/^SupplementaryGroups=.*/SupplementaryGroups=$groups/" /etc/systemd/system/eglo-bridge.service
+  systemctl daemon-reload
+}
+
 install_pkg() {
   # build from a clean temporary copy: building in-tree as root leaves root-owned
   # build/ and *.egg-info in the checkout, and a stale build/lib can resurrect deleted modules
@@ -35,6 +55,8 @@ case "${1:-install}" in
       sudo -u "$(stat -c %U "$SRC/..")" git -C "$SRC/.." pull --ff-only
     fi
     install_pkg ""
+    screen_access
+    install_service
     systemctl restart eglo-bridge
     echo "Aktualisiert auf $("$VENV/bin/eglo-bridge" --version)."
     exit 0
@@ -64,6 +86,7 @@ if ! id "$SVC_USER" >/dev/null 2>&1; then
 fi
 usermod -aG bluetooth "$SVC_USER"
 getent group audio >/dev/null && usermod -aG audio "$SVC_USER"
+screen_access
 
 echo "==> Programm nach $PREFIX"
 mkdir -p "$PREFIX"
@@ -85,11 +108,7 @@ else
 fi
 
 echo "==> systemd-Dienst"
-install -m 644 "$SRC/eglo-bridge.service" /etc/systemd/system/eglo-bridge.service
-if ! getent group audio >/dev/null; then
-  sed -i 's/^SupplementaryGroups=bluetooth audio/SupplementaryGroups=bluetooth/' /etc/systemd/system/eglo-bridge.service
-fi
-systemctl daemon-reload
+install_service
 if sudo -u "$SVC_USER" "$VENV/bin/python" -c 'import sys; from eglo_bridge.config import Config; sys.exit(0 if Config.load().is_complete else 1)'; then
   systemctl enable eglo-bridge
   systemctl restart eglo-bridge
