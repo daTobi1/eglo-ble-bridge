@@ -176,6 +176,7 @@ class KioskActivity : Activity(), KioskControl.Ui {
         Updater.latest?.let { if (it.versionCode > Updater.currentVersionCode(this)) showUpdate(it) }
         if (KioskControl.wakeRequested) { KioskControl.wakeRequested = false; setScreen(true) }
         showVoice(KioskControl.voice)
+        BridgeService.refreshFromForeground(this)
     }
 
     override fun onPause() {
