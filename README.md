@@ -9,6 +9,8 @@ Android-App, die ein altes Tablet zur **Brücke zwischen EGLO-Connect/AwoX-Bluet
 
 > **Raspberry Pi / Linux:** Dieselbe Bridge gibt es auch als Linux-Dienst, siehe [`pi/`](pi/README.md). Pi und Tablets arbeiten zusammen; jede Lampe wird von der Bridge mit dem besten Empfang gesteuert.
 
+> **KI-Assistent / MCP:** Mit dem MCP-Server in [`mcp/`](mcp/README.md) kann z. B. Claude Lampen und Bridges direkt per MQTT steuern.
+
 ## Installation
 
 1. Auf dem Tablet die APK aus dem Release **[latest](../../releases/tag/latest)** herunterladen und installieren.

@@ -1,0 +1,30 @@
+{
+  "name": "eglo-bridge-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for the EGLO BLE Bridge (talks to the bridges via MQTT)",
+  "type": "module",
+  "bin": {
+    "eglo-bridge-mcp": "server.js"
+  },
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test.js",
+    "bundle": "esbuild server.js --bundle --platform=node --format=esm --target=node18 --outfile=build/server.mjs \"--banner:js=import { createRequire as __cr } from 'module'; const require = __cr(import.meta.url);\"",
+    "mcpb": "npm run bundle && rm -rf pack && mkdir -p pack/server && cp manifest.json pack/ && cp build/server.mjs pack/server/ && mcpb pack pack eglo-bridge.mcpb"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "mqtt": "^5.16.1",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "aedes": "^0.51.3",
+    "esbuild": "^0.28.2",
+    "@anthropic-ai/mcpb": "^2.1.2"
+  },
+  "license": "MIT"
+}
