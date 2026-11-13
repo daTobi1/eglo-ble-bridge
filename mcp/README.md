@@ -14,12 +14,13 @@ Bridges nutzen – an den Bridges muss nichts geändert werden.
 | `eglo_favorite` | Favorit 1/2 abrufen oder speichern |
 | `eglo_lamp_setting` | Lagerfeuer-Tempo/-Stärke/-Helligkeit, Effekt-Tempo einer Lampe |
 | `eglo_effects` | Musikmodus, Musikquelle, Empfindlichkeit, globale Effekt-/Lagerfeuer-Werte, Lampen im Musikmodus |
-| `eglo_list_bridges` | Bridges mit Status, Version, Akku, Bildschirm, Mikrofon, Update, Zuständigkeit |
+| `eglo_list_bridges` | Bridges mit Status, Version, Akku, Bildschirm, Mikrofon, Update, Zuständigkeit, Einstellungen und Geräteinfo (Modell, Android/OS, WebView, IP, Speicher …) |
 | `eglo_bridge_log` | Log-Zeilen (live empfangen, ab Start des Servers gepuffert) |
 | `eglo_bridge_debug` | Debug-Log einer Bridge an/aus |
 | `eglo_bridge_command` | `reconnect`, `restart`, `reimport`, `check_update`, `install_update`, `reload_kiosk` |
 | `eglo_kiosk` | Tablet-Bildschirm an/aus, Helligkeit, Bildschirm-aus-Zeit, Dashboard-URL |
 | `eglo_assign` | Zuständigkeit einer Bridge für einzelne/alle Lampen |
+| `eglo_configure_bridge` | Tablet/Pi einstellen: Name (ID bleibt, HA-Gerät bleibt), Kiosk an/aus, Dashboard-URL, PIN, Bildschirm, Medienlautstärke, MQTT-Zugang (nur nach erfolgreicher Testverbindung), AwoX-Konto, Debug, Neustart/Reimport |
 | `eglo_mqtt_topics` | Rohdaten aller `eglo_bridge/…`-Topics zur Diagnose |
 
 Lampen und Bridges werden per Name, Teilname (Umlaute egal) oder ID angesprochen.
@@ -63,3 +64,10 @@ npm test          # lokaler Broker + simulierte Bridge + MCP-Client, Ende-zu-End
 npm run bundle    # build/server.mjs (eine Datei, ohne node_modules)
 npm run mcpb      # eglo-bridge.mcpb für Claude Desktop
 ```
+
+## Einstellungen per MQTT (ab App-Build mit `config/set`)
+
+Jede Bridge veröffentlicht `eglo_bridge/bridge/<id>/config` (retained, ohne Passwörter):
+`{bridge_id, name, platform, version, settings: {…}, device: {…}}` und nimmt Änderungen als JSON auf
+`eglo_bridge/bridge/<id>/config/set` an. Die `<id>` wird beim ersten Start aus dem Namen gebildet und
+bleibt danach fest – Umbenennen ändert nur den Anzeigenamen.

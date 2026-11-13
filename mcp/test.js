@@ -37,6 +37,9 @@ await pubR(`${B}/bridge/${bid}/screen`, "ON");
 await pubR(`${B}/bridge/${bid}/brightness`, "60");
 await pubR(`${B}/bridge/${bid}/battery`, "87");
 await pubR(`${B}/music`, "OFF");
+const bcfg = { bridge_id: bid, name: "SM-P600 8EDA", platform: "android",
+  settings: { kiosk_url: "http://ha/", media_volume: 30 }, device: { model: "SM-P600", android: "11", media_volume: 30 } };
+await pubR(`${B}/bridge/${bid}/config`, bcfg);
 const received = [];
 fake.subscribe(`${B}/#`);
 fake.on("message", (t, buf) => {
@@ -52,6 +55,14 @@ fake.on("message", (t, buf) => {
   }
   if (t === `${B}/bridge/${bid}/screen/set`) pubR(`${B}/bridge/${bid}/screen`, v);
   if (t === `${B}/bridge/${bid}/debug/set`) pubR(`${B}/bridge/${bid}/debug`, v);
+  if (t === `${B}/bridge/${bid}/config/set`) {
+    const o = JSON.parse(v);
+    if (o.name) { bcfg.name = o.name; pubR(`${B}/bridge/${bid}/info`, { name: o.name, platform: "android" }); }
+    if (o.media_volume !== undefined) bcfg.device.media_volume = o.media_volume;
+    if (o.kiosk_url) bcfg.settings.kiosk_url = o.kiosk_url;
+    fake.publish(`${B}/bridge/${bid}/log`, `Einstellungen geändert: ${Object.keys(o).join(", ")}`);
+    pubR(`${B}/bridge/${bid}/config`, bcfg);
+  }
 });
 
 // ---- MCP server
@@ -108,6 +119,19 @@ assert.ok(received.some(([t, v]) => t === `${B}/music/set` && v === "ON"));
 
 const g = await call("eglo_get_lamp", { lamp: "12" });
 assert.equal(g.link_scores["SM-P600 8EDA"], 80);
+
+const lb = await call("eglo_list_bridges");
+assert.equal(lb[0].device.model, "SM-P600");
+const c1 = await call("eglo_configure_bridge", { bridge: "8eda", name: "Tablet Flur", media_volume: 55, kiosk_pin: "4711" });
+assert.equal(c1.confirmed, true);
+assert.equal(c1.sent.kiosk_pin, "***");
+const sentCfg = received.filter(([t]) => t.endsWith("/config/set")).map(([, v]) => JSON.parse(v));
+assert.deepEqual(sentCfg[0], { name: "Tablet Flur", media_volume: 55, kiosk_pin: "4711" });
+const lb2 = await call("eglo_list_bridges");
+assert.equal(lb2[0].name, "Tablet Flur");
+assert.equal(lb2[0].device.media_volume, 55);
+const c2 = await call("eglo_set_light", { lamps: ["küche"], on: true });   // bridge renamed, lamps still fine
+assert.equal(c2.results[0].controlled_by, "Tablet Flur");
 
 console.log("ALLE TESTS OK");
 await client.close();

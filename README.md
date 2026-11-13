@@ -21,6 +21,8 @@ Android-App, die ein altes Tablet zur **Brücke zwischen EGLO-Connect/AwoX-Bluet
 
 Die Lampen erscheinen in Home Assistant unter *Einstellungen → Geräte & Dienste → MQTT*.
 
+Der Name des Tablets lässt sich später in Home Assistant (Entität „Name“) oder per MQTT `eglo_bridge/bridge/<id>/config/set` ändern – Gerät und Entitäten in HA bleiben dabei erhalten. Über `config/set` lassen sich außerdem Kiosk, Dashboard-Adresse, PIN, Helligkeit, Medienlautstärke, MQTT- und AwoX-Zugang ändern; `eglo_bridge/bridge/<id>/config` zeigt die aktuellen Einstellungen und Geräteinfos.
+
 ## Zuständigkeit mehrerer Bridges
 
 Jede Bridge (Tablet, Pi) kann auf bestimmte Lampen beschränkt werden: Sie verbindet sich dann nur

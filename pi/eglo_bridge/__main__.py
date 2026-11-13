@@ -53,9 +53,17 @@ class Bridge:
         self.lights = LightController(self.sched, self.mesh, cfg.devices)
         self.lights.music_sensitivity = cfg.musicSensitivity
         has_mic = music.available()
-        self.mqtt = MqttBridge(self.sched, self.mesh, self.lights, __version__, slug(cfg.bridgeName),
+        if not cfg.bridgeId:
+            # fixed from now on: a later rename keeps the MQTT id and so the Home Assistant device
+            cfg.bridgeId = slug(cfg.bridgeName)
+            try:
+                cfg.save()
+            except OSError as err:
+                log.w(f"Bridge-ID konnte nicht gespeichert werden: {err}")
+        self.mqtt = MqttBridge(self.sched, self.mesh, self.lights, __version__, cfg.bridgeId,
                                cfg.bridgeName, has_mic)
         self.mqtt.on_service_command = self._on_service_command
+        self.mqtt.on_config_set = self._on_config_set
         self.mqtt.on_assignment_changed = self._save_assignment
         self.screen = Screen.detect(self.sched)
         self.screen.start(cfg.screenTimeout, cfg.screenBrightness)
@@ -129,6 +137,73 @@ class Bridge:
             cfg.save()
         except OSError as err:
             log.e("Bildschirm-Einstellungen konnten nicht gespeichert werden", err)
+
+    def _on_config_set(self, o: dict) -> None:
+        """Settings sent over MQTT (``<bridge>/config/set``). Unknown keys are ignored.
+
+        MQTT changes are only saved after a test connection with the new values worked.
+        """
+        cfg = Config.load(self.config_path)
+        changed: list[str] = []
+        restart = bool(o.get("restart"))
+        name = str(o.get("name") or "").strip()
+        if name and name != cfg.bridgeName:
+            cfg.bridgeName = name
+            changed.append(f"Name „{name}“")
+            restart = True
+        if "debug_log" in o:
+            cfg.debugLog = bool(o["debug_log"])
+            log.verbose = cfg.debugLog
+            changed.append("Debug-Log")
+        if o.get("awox_user"):
+            cfg.awoxUser = str(o["awox_user"]).strip()
+            changed.append("AwoX-Konto")
+        if o.get("awox_password"):
+            cfg.awoxPassword = str(o["awox_password"])
+            if "AwoX-Konto" not in changed:
+                changed.append("AwoX-Konto")
+        sc = self.screen
+        if sc is not None and sc.available:
+            if "screen_timeout" in o:
+                sc.set_timeout(int(o["screen_timeout"]))
+                cfg.screenTimeout = sc.timeout_min
+                changed.append("Bildschirm-Timeout")
+            if "screen_brightness" in o:
+                sc.set_brightness(int(o["screen_brightness"]))
+                cfg.screenBrightness = sc.brightness_pct
+                changed.append("Helligkeit")
+        if changed:
+            try:
+                cfg.save()
+            except OSError as err:
+                log.e("Einstellungen konnten nicht gespeichert werden", err)
+                return
+            log.i("Einstellungen geändert: " + ", ".join(changed))
+        if any(k in o for k in ("mqtt_host", "mqtt_port", "mqtt_user", "mqtt_password")):
+            self.sched.spawn(self._change_mqtt(o))
+            return
+        if o.get("reimport"):
+            self.sched.spawn(self._reimport())
+        elif restart:
+            self.sched.spawn(self._restart())
+        elif self.mqtt is not None:
+            self.mqtt.publish_config()
+
+    async def _change_mqtt(self, o: dict) -> None:
+        from .mqtt import test_connection
+        cfg = Config.load(self.config_path)
+        host = str(o.get("mqtt_host") or cfg.mqttHost).strip()
+        port = int(o.get("mqtt_port") or cfg.mqttPort)
+        user = str(o["mqtt_user"]).strip() if "mqtt_user" in o else cfg.mqttUser
+        pw = str(o["mqtt_password"]) if "mqtt_password" in o else cfg.mqttPassword
+        ok = await self.loop.run_in_executor(None, test_connection, host, port, user, pw)
+        if not ok:
+            log.e(f"MQTT-Änderung verworfen: Testverbindung zu {host}:{port} fehlgeschlagen")
+            return
+        cfg.mqttHost, cfg.mqttPort, cfg.mqttUser, cfg.mqttPassword = host, port, user, pw
+        cfg.save()
+        log.i(f"MQTT-Zugang geändert ({host}:{port}) – Bridge startet neu")
+        await self._restart()
 
     def _on_service_command(self, cmd: str) -> None:
         if cmd == "restart":

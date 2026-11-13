@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "eglo-bridge",
   "display_name": "EGLO BLE Bridge",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Steuert EGLO-Connect/AwoX-Lampen und die EGLO-BLE-Bridges (Tablets, Raspberry Pi) über MQTT.",
   "long_description": "Liest den Zustand aller EGLO-Bridges und Lampen aus dem MQTT-Broker und sendet dieselben Befehle wie Home Assistant: Lampen schalten (Helligkeit, Farbtemperatur, RGB, Effekte), Favoriten, Musikmodus/Lagerfeuer, Bridge-Log, Debug, Neu verbinden/Neustart/Reimport/Update, Tablet-Bildschirm und Kiosk, Zuständigkeit der Bridges.",
   "author": {
@@ -78,6 +78,10 @@
     {
       "name": "eglo_assign",
       "description": "Zuständigkeit einer Bridge für Lampen"
+    },
+    {
+      "name": "eglo_configure_bridge",
+      "description": "Bridge/Tablet einstellen: Name, Kiosk, PIN, Lautstärke, MQTT, AwoX, Debug"
     },
     {
       "name": "eglo_mqtt_topics",

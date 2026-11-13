@@ -20,7 +20,7 @@ import { z } from "zod";
 const BASE = "eglo_bridge";
 const URL = process.env.EGLO_MQTT_URL || "mqtt://192.168.178.120:1883";
 const LOG_LINES = parseInt(process.env.EGLO_LOG_LINES || "300", 10);
-const VERSION = "1.0.0";
+const VERSION = "1.1.0";
 
 const EFFECTS = ["Kein Effekt", "Farbwechsel", "Sequenz 2", "Sequenz 3", "Sequenz 4", "Sequenz 5",
   "Sequenz 6", "Sequenz 7", "Kerze", "Lagerfeuer", "Musik"];
@@ -128,6 +128,7 @@ function onMessage(topic, buf) {
       case "charging": b.charging = onOff(v); break;
       case "kiosk": b.kiosk_visible = onOff(v); break;
       case "update": b.update = json(v); break;
+      case "config": b.config = json(v); if (b.config?.name) b.name = b.config.name; break;
       case "lamps_all": b.responsible_for_all = onOff(v); break;
       default: {
         const m = k.match(/^lamp\/(\d+)$/);
@@ -307,6 +308,8 @@ function bridgeView(b, withDetails = false) {
     o.responsible_for = Object.entries(b.lamp_assignment)
       .filter(([, on]) => on).map(([id]) => lamps.get(+id)?.name || id);
     o.log_lines_buffered = b.log.length;
+    if (b.config) { o.settings = b.config.settings; o.device = b.config.device; }
+    else o.settings_note = "Diese Bridge meldet noch keine Einstellungen (App-/Pi-Version zu alt – Update einspielen).";
   }
   return o;
 }
@@ -571,6 +574,59 @@ server.registerTool("eglo_assign", {
   else await publish(`${t}/lamp/${resolveLamp(lq).id}/set`, responsible ? "ON" : "OFF");
   await new Promise((r) => setTimeout(r, 2000));
   return bridgeView(b, true);
+}));
+
+server.registerTool("eglo_configure_bridge", {
+  title: "Bridge/Tablet einstellen",
+  description:
+    "Ändert Einstellungen einer Bridge (Tablet oder Pi). Umbenennen behält die MQTT-ID, Home Assistant behält also Gerät und Entitäten. " +
+    "MQTT-Änderungen übernimmt die Bridge nur, wenn eine Testverbindung mit den neuen Daten klappt. " +
+    "Tablet: kiosk_enabled, kiosk_url, kiosk_pin, kiosk_screen_timeout, kiosk_brightness, media_volume. " +
+    "Pi: screen_timeout, screen_brightness. Beide: name, debug_log, mqtt_*, awox_* (+ reimport), restart. " +
+    "Aktuelle Werte und Geräteinfos (Modell, Android/OS, WebView, IP, Speicher …) liefert eglo_list_bridges.",
+  inputSchema: {
+    bridge: z.string().describe("Name oder ID der Bridge"),
+    name: z.string().min(1).max(40).optional().describe("neuer Anzeigename"),
+    debug_log: z.boolean().optional(),
+    kiosk_enabled: z.boolean().optional().describe("Tablet: Kiosk-Dashboard an/aus"),
+    kiosk_url: z.string().optional().describe("Tablet: Dashboard-Adresse"),
+    kiosk_pin: z.string().regex(/^\d{3,8}$/).optional().describe("Tablet: PIN für das Kiosk-Menü"),
+    kiosk_screen_timeout: z.number().int().min(0).max(120).optional().describe("Tablet: Minuten bis Bildschirm aus, 0 = nie"),
+    kiosk_brightness: z.number().int().min(1).max(100).optional().describe("Tablet: Bildschirmhelligkeit %"),
+    media_volume: z.number().int().min(0).max(100).optional().describe("Tablet: Medienlautstärke %"),
+    screen_timeout: z.number().int().min(0).max(120).optional().describe("Pi: Minuten bis Display aus"),
+    screen_brightness: z.number().int().min(1).max(100).optional().describe("Pi: Display-Helligkeit %"),
+    mqtt_host: z.string().optional(),
+    mqtt_port: z.number().int().min(1).max(65535).optional(),
+    mqtt_user: z.string().optional(),
+    mqtt_password: z.string().optional(),
+    awox_user: z.string().optional(),
+    awox_password: z.string().optional(),
+    reimport: z.boolean().optional().describe("danach Lampen aus der AwoX-Cloud neu importieren"),
+    restart: z.boolean().optional().describe("danach Bridge neu starten"),
+  },
+}, (a) => run(async () => {
+  const b = resolveBridge(a.bridge);
+  if (b.online === false) throw new Error(`Bridge „${b.name}“ ist offline.`);
+  const { bridge: _ignored, ...payload } = a;
+  if (!Object.keys(payload).length) throw new Error("Keine Einstellung angegeben.");
+  const before = raw.get(`${BASE}/bridge/${b.id}/config`);
+  const logStart = b.log.length;
+  const updated = waitFor((t, v) => t === `${BASE}/bridge/${b.id}/config` && v !== before,
+    payload.name || payload.restart || payload.reimport || payload.mqtt_host || payload.mqtt_port ||
+      payload.mqtt_user !== undefined || payload.mqtt_password !== undefined ? 25000 : 6000);
+  await publish(`${BASE}/bridge/${b.id}/config/set`, JSON.stringify(payload));
+  const ok = await updated;
+  const secret = (k) => /password|pin/.test(k);
+  return {
+    bridge: b.name,
+    sent: Object.fromEntries(Object.entries(payload).map(([k, v]) => [k, secret(k) ? "***" : v])),
+    confirmed: ok,
+    note: ok ? undefined : (b.config ? "Keine Bestätigung – Log prüfen." :
+      "Keine Bestätigung: Die Bridge kennt config/set vermutlich noch nicht (Update nötig)."),
+    settings: b.config?.settings,
+    log: b.log.slice(logStart).slice(-10),
+  };
 }));
 
 server.registerTool("eglo_mqtt_topics", {

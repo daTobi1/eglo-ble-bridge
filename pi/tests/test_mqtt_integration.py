@@ -195,6 +195,26 @@ def test_bridge_end_to_end(broker, tmp_path, monkeypatch):
             # HA button "reconnect"
             ha.pub("eglo_bridge/bridge/pi_kueche/cmd", "reconnect")
             await _wait(lambda: "Neuverbindung" in " ".join(entry.log.snapshot()[-20:]))
+
+            # settings snapshot (retained, without passwords) + name entity
+            await _wait(lambda: "eglo_bridge/bridge/pi_kueche/config" in ha.msgs)
+            conf = json.loads(ha.msgs["eglo_bridge/bridge/pi_kueche/config"])
+            assert conf["bridge_id"] == "pi_kueche" and conf["name"] == "Pi Küche"
+            assert conf["settings"]["mqtt_port"] == broker and "mqtt_password" not in conf["settings"]
+            assert "screen_brightness" in conf["settings"] and "hostname" in conf["device"]
+            assert "homeassistant/text/eglo_bridge_pi_kueche_name/config" in ha.msgs
+            # broken MQTT credentials are rejected (test connection), nothing is saved
+            ha.pub("eglo_bridge/bridge/pi_kueche/config/set", json.dumps({"mqtt_port": _free_port()}))
+            await _wait(lambda: "MQTT-Änderung verworfen" in " ".join(entry.log.snapshot()[-20:]), timeout=15)
+            assert Config.load(cfg.path).mqttPort == broker
+            # rename: same MQTT id (HA device stays), new display name after the restart
+            ha.pub("eglo_bridge/bridge/pi_kueche/config/set", json.dumps({"name": "Pi Wohnzimmer"}))
+            await _wait(lambda: json.loads(ha.msgs.get("eglo_bridge/bridge/pi_kueche/info", "{}"))
+                        .get("name") == "Pi Wohnzimmer", timeout=20)
+            saved = Config.load(cfg.path)
+            assert saved.bridgeName == "Pi Wohnzimmer" and saved.bridgeId == "pi_kueche"
+            await _wait(lambda: json.loads(ha.msgs["eglo_bridge/bridge/pi_kueche/config"])["name"] == "Pi Wohnzimmer")
+            assert not any(t.startswith("eglo_bridge/bridge/pi_wohnzimmer") for t in ha.msgs)
         finally:
             await bridge.stop()
             await _wait(lambda: ha.msgs.get("eglo_bridge/bridge/pi_kueche/status") == "offline")

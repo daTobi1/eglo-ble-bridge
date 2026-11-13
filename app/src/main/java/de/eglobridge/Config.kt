@@ -71,12 +71,24 @@ class Config(context: Context) {
         get() = p.getString("mqttPassword", "")!!
         set(v) = p.edit().putString("mqttPassword", v).apply()
 
-    /** Name of this tablet (shown in Home Assistant, used for its MQTT id). */
+    /** Name of this tablet (shown in Home Assistant; renaming keeps the MQTT id, see [bridgeId]). */
     var bridgeName: String
         get() = p.getString("bridgeName", null)
             // several identical tablets must not share a name (it is their MQTT id)
             ?: ("Tablet " + android.os.Build.MODEL + " " + androidId.takeLast(4).uppercase()).trim()
         set(v) = p.edit().putString("bridgeName", v.trim()).apply()
+
+    /**
+     * MQTT id of this bridge. Fixed on first use (from the name at that time), so renaming the
+     * bridge later only changes its display name and Home Assistant keeps the same device/entities.
+     */
+    val bridgeId: String
+        get() {
+            p.getString("bridgeId", null)?.let { return it }
+            val id = MqttBridge.slug(bridgeName)
+            p.edit().putString("bridgeId", id).apply()
+            return id
+        }
 
     var debugLog: Boolean
         get() = p.getBoolean("debugLog", false)
