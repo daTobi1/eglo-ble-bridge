@@ -237,6 +237,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        BridgeService.refreshFromForeground(this)
         if (autostartOnly) return
         ui.post(refresher)
         // check on every app start / return to the app (independent of the bridge service)
