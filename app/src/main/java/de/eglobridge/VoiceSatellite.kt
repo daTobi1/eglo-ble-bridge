@@ -142,6 +142,7 @@ class VoiceSatellite(private val ctx: Context, private val version: String) : Ap
         }
     }
     private var micOpen = false
+    private var micRetryPending = false
 
     // ------------------------------------------------------------------ lifecycle
 
@@ -329,7 +330,11 @@ class VoiceSatellite(private val ctx: Context, private val version: String) : Ap
         if (runActive || pendingStart || ttsPlaying || phase == Phase.ANNOUNCING) return
         if (SystemClock.elapsedRealtime() < retryAt) return
         if (!openMic()) {
-            h.postDelayed({ ensureListening() }, 15000)
+            // one retry at a time (watchdog and events used to stack retries: several per second)
+            if (!micRetryPending) {
+                micRetryPending = true
+                h.postDelayed({ micRetryPending = false; ensureListening() }, 15000)
+            }
             return
         }
         conversationId = ""
@@ -507,8 +512,9 @@ class VoiceSatellite(private val ctx: Context, private val version: String) : Ap
 
     private fun openMic(): Boolean {
         if (micOpen) return true
+        val wasBlocked = MicHub.blocked
         micOpen = MicHub.add(micListener)
-        if (!micOpen) BridgeLog.e("Sprach-Satellit: Mikrofon nicht verfügbar")
+        if (!micOpen && !wasBlocked) BridgeLog.e("Sprach-Satellit: Mikrofon nicht verfügbar")
         return micOpen
     }
 
