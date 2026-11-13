@@ -41,6 +41,16 @@ object MicHub {
 
     val isOpen get() = record != null
 
+    /** True while the microphone cannot be opened at all; errors are logged once per such period. */
+    @Volatile var blocked = false
+        private set
+
+    private fun failed(msg: String, t: Throwable? = null) {
+        // log once per blocked period – the satellite retries regularly
+        if (!blocked) { if (t != null) BridgeLog.e(msg, t) else BridgeLog.e(msg) }
+        blocked = true
+    }
+
     /** True while the microphone delivers nothing but digital silence (Android blocks it). */
     @Volatile var silent = false
         private set
@@ -70,37 +80,62 @@ object MicHub {
      */
     @Volatile var source: String = "voice_recognition"
 
-    private fun sourceId(): Int = when (source) {
+    private fun sourceId(name: String): Int = when (name) {
         "mic" -> MediaRecorder.AudioSource.MIC
         "unprocessed" -> if (android.os.Build.VERSION.SDK_INT >= 24) MediaRecorder.AudioSource.UNPROCESSED
             else MediaRecorder.AudioSource.VOICE_RECOGNITION
         else -> MediaRecorder.AudioSource.VOICE_RECOGNITION
     }
 
+    /** The configured source first, then the ones every Android device has. */
+    private fun candidates(): List<String> =
+        listOf(source, "voice_recognition", "mic").distinct()
+
+    /** Source actually in use (may differ from [source] when that one is not supported). */
+    @Volatile var activeSource: String = ""
+        private set
+    private var warnedSource = ""
+
     @SuppressLint("MissingPermission")
     private fun open(): Boolean {
         val minBuf = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-        if (minBuf <= 0) { BridgeLog.e("Mikrofon: ungültige Puffergröße"); return false }
-        val rec = try {
-            AudioRecord(sourceId(), RATE, AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT, max(minBuf, CHUNK * 2 * 8))
-        } catch (t: Throwable) {
-            BridgeLog.e("Mikrofon nicht verfügbar", t); return false
+        if (minBuf <= 0) { failed("Mikrofon: ungültige Puffergröße"); return false }
+        // A source the tablet does not support (e.g. "unprocessed" on the SM-P600) makes AudioRecord
+        // fail to initialise. It only takes effect when the microphone is opened next, i.e. often
+        // after the next restart – so fall back to a working source instead of staying deaf.
+        var rec: AudioRecord? = null
+        var used = ""
+        for (name in candidates()) {
+            val r = try {
+                AudioRecord(sourceId(name), RATE, AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT, max(minBuf, CHUNK * 2 * 8))
+            } catch (t: Throwable) { null }
+            if (r != null && r.state == AudioRecord.STATE_INITIALIZED) { rec = r; used = name; break }
+            r?.release()
         }
-        if (rec.state != AudioRecord.STATE_INITIALIZED) {
-            BridgeLog.e("Mikrofon konnte nicht geöffnet werden (Berechtigung?)")
-            rec.release(); return false
+        if (rec == null) {
+            failed("Mikrofon konnte nicht geöffnet werden (Berechtigung? Quelle: $source)")
+            return false
         }
         try { rec.startRecording() } catch (t: Throwable) {
-            BridgeLog.e("Mikrofon-Aufnahme startet nicht", t); rec.release(); return false
+            rec.release(); failed("Mikrofon-Aufnahme startet nicht", t); return false
         }
+        if (used != source && warnedSource != source) {
+            warnedSource = source
+            BridgeLog.w("Mikrofon-Quelle „$source“ wird von diesem Gerät nicht unterstützt – nutze „$used“")
+        }
+        if (blocked) BridgeLog.i("Mikrofon wieder verfügbar")
+        blocked = false
+        activeSource = used
         record = rec
         silent = false
         silentChunks = 0
-        BridgeLog.i("Mikrofon geöffnet (Quelle: $source)")
-        thread = Thread({ loop(rec) }, "mic").apply { priority = Thread.MAX_PRIORITY; start() }
+        BridgeLog.i("Mikrofon geöffnet (Quelle: $used)")
+        val r = rec
+        thread = Thread({ loop(r) }, "mic").apply { priority = Thread.MAX_PRIORITY; start() }
         return true
     }
+
 
     private fun close() {
         val rec = record ?: return
