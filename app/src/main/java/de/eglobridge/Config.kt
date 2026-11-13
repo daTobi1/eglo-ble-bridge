@@ -147,6 +147,30 @@ class Config(context: Context) {
         get() = p.getInt("savedScreenTimeout", 0)
         set(v) = p.edit().putInt("savedScreenTimeout", v).apply()
 
+    // ---- voice satellite (ESPHome API for Home Assistant Assist)
+    /** Tablet appears in Home Assistant as an ESPHome voice satellite (port 6053). */
+    var voiceEnabled: Boolean
+        get() = p.getBoolean("voiceEnabled", false)
+        set(v) = p.edit().putBoolean("voiceEnabled", v).apply()
+    /** Microphone muted (switch "Mikrofon stumm" in Home Assistant). */
+    var voiceMuted: Boolean
+        get() = p.getBoolean("voiceMuted", false)
+        set(v) = p.edit().putBoolean("voiceMuted", v).apply()
+    /**
+     * Stable pseudo MAC address for Home Assistant (unique id of the ESPHome device). Android hides
+     * the real one, so it is derived once from the Android id ("locally administered" range 02:…).
+     */
+    val voiceMac: String
+        get() {
+            p.getString("voiceMac", null)?.let { return it }
+            val h = java.security.MessageDigest.getInstance("SHA-256")
+                .digest(("eglo-voice:" + androidId + ":" + bridgeId).toByteArray())
+            val mac = (listOf(0x02) + (0 until 5).map { h[it].toInt() and 0xFF })
+                .joinToString(":") { "%02X".format(it) }
+            p.edit().putString("voiceMac", mac).apply()
+            return mac
+        }
+
     var enabled: Boolean
         get() = p.getBoolean("enabled", false)
         set(v) = p.edit().putBoolean("enabled", v).apply()

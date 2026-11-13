@@ -1,13 +1,8 @@
 package de.eglobridge
 
-import android.annotation.SuppressLint
-import android.media.AudioFormat
-import android.media.AudioRecord
-import android.media.MediaRecorder
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.ln
-import kotlin.math.max
 import kotlin.math.sin
 import kotlin.math.sqrt
 
@@ -32,23 +27,16 @@ class MusicMode(private val onFrame: (r: Int, g: Int, b: Int, level: Float, beat
 
     val isRunning get() = running
 
-    @SuppressLint("MissingPermission")
+    /** Microphone chunks from [MicHub]; the analysis thread takes them from here. */
+    private val queue = java.util.concurrent.ArrayBlockingQueue<ShortArray>(64)
+    private val micListener = MicHub.Listener { pcm -> queue.offer(pcm) }
+
     fun start(): Boolean {
         if (running) return true
-        val minBuf = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-        if (minBuf <= 0) { BridgeLog.e("Mikrofon: ungültige Puffergröße"); return false }
-        val rec = try {
-            AudioRecord(MediaRecorder.AudioSource.MIC, RATE, AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT, max(minBuf, N * 4))
-        } catch (t: Throwable) {
-            BridgeLog.e("Mikrofon nicht verfügbar", t); return false
-        }
-        if (rec.state != AudioRecord.STATE_INITIALIZED) {
-            BridgeLog.e("Mikrofon konnte nicht geöffnet werden (Berechtigung?)")
-            rec.release(); return false
-        }
+        queue.clear()
+        if (!MicHub.add(micListener)) return false
         running = true
-        thread = Thread({ loop(rec) }, "music").also { it.start() }
+        thread = Thread({ loop() }, "music").also { it.start() }
         BridgeLog.i("Musikmodus gestartet")
         return true
     }
@@ -56,12 +44,13 @@ class MusicMode(private val onFrame: (r: Int, g: Int, b: Int, level: Float, beat
     fun stop() {
         if (!running) return
         running = false
+        MicHub.remove(micListener)
         thread?.join(500)
         thread = null
         BridgeLog.i("Musikmodus gestoppt")
     }
 
-    private fun loop(rec: AudioRecord) {
+    private fun loop() {
         val buf = ShortArray(N)
         val re = DoubleArray(N)
         val im = DoubleArray(N)
@@ -73,15 +62,22 @@ class MusicMode(private val onFrame: (r: Int, g: Int, b: Int, level: Float, beat
         var smoothHue = 0.0
         var lastBeat = 0L
         try {
-            rec.startRecording()
+            var pending: ShortArray? = null
+            var pendingPos = 0
             while (running) {
                 var read = 0
                 while (read < N && running) {
-                    val n = rec.read(buf, read, N - read)
-                    if (n <= 0) break
-                    read += n
+                    if (pending == null) {
+                        pending = queue.poll(200, java.util.concurrent.TimeUnit.MILLISECONDS) ?: continue
+                        pendingPos = 0
+                    }
+                    val p = pending!!
+                    val n = minOf(N - read, p.size - pendingPos)
+                    System.arraycopy(p, pendingPos, buf, read, n)
+                    read += n; pendingPos += n
+                    if (pendingPos >= p.size) pending = null
                 }
-                if (read < N) { Thread.sleep(50); continue }
+                if (read < N) continue
 
                 var sum = 0.0
                 for (i in 0 until N) {
@@ -109,7 +105,7 @@ class MusicMode(private val onFrame: (r: Int, g: Int, b: Int, level: Float, beat
                 val total = bass + mid + high + 1e-12
 
                 // automatic gain: slowly decaying peak
-                peak = max(peak * 0.997, rms)
+                peak = kotlin.math.max(peak * 0.997, rms)
                 val level = (rms / peak).coerceIn(0.0, 1.0)
                 // compress dynamics a little (log-ish)
                 val lv = (ln(1 + 9 * level) / ln(10.0))
@@ -135,9 +131,7 @@ class MusicMode(private val onFrame: (r: Int, g: Int, b: Int, level: Float, beat
         } catch (t: Throwable) {
             BridgeLog.e("Musikmodus-Fehler", t)
         } finally {
-            try { rec.stop() } catch (_: Throwable) { }
-            rec.release()
-            running = false
+            if (running) { running = false; MicHub.remove(micListener) }
         }
     }
 

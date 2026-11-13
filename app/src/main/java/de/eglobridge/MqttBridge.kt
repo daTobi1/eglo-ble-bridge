@@ -206,6 +206,7 @@ class MqttBridge(
                 .put("kiosk_screen_timeout", c.kioskScreenTimeout)
                 .put("kiosk_brightness", c.kioskBrightness)
                 .put("assistant_access", c.assistantAccess)
+                .put("voice_enabled", c.voiceEnabled)
                 .put("mcp_port", if (c.mcpEnabled) McpServer.PORT else JSONObject.NULL)
                 .put("lamps", c.devices.count { it.isLight })
                 .put("assigned_lamps", c.assignedLamps?.let { JSONArray(it.sorted()) } ?: "all"))

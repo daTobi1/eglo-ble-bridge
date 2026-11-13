@@ -2,7 +2,7 @@ name: Build APK
 
 on:
   push:
-    branches: [main]
+    branches: [main, "voice-*"]
   pull_request:
   workflow_dispatch:
 
@@ -46,7 +46,8 @@ jobs:
           path: eglo-ble-bridge.apk
 
       - name: Publish "latest" release
-        if: github.event_name != 'pull_request'
+        # only main feeds the tablets' self-update
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -54,4 +55,18 @@ jobs:
           gh release create latest eglo-ble-bridge.apk version.json \
             --title "EGLO BLE Bridge (Build ${{ github.run_number }})" \
             --notes "Automatischer Build von ${{ github.sha }}. Auf dem Tablet herunterladen und installieren." \
+            --target ${{ github.sha }}
+
+      - name: Publish test release for feature branches
+        # e.g. branch voice-satellite -> pre-release "beta-voice-satellite"; the tablets' self-update
+        # only looks at "latest", so installing a test build is always a manual step
+        if: github.event_name != 'pull_request' && github.ref != 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="beta-${GITHUB_REF_NAME//\//-}"
+          gh release delete "$TAG" --yes --cleanup-tag || true
+          gh release create "$TAG" eglo-ble-bridge.apk version.json --prerelease \
+            --title "EGLO BLE Bridge TEST ${GITHUB_REF_NAME} (Build ${{ github.run_number }})" \
+            --notes "Testversion vom Branch ${GITHUB_REF_NAME} (${{ github.sha }}). Nur zum Ausprobieren." \
             --target ${{ github.sha }}
