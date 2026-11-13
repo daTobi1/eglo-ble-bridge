@@ -101,7 +101,27 @@ class VoiceSatellite(private val ctx: Context, private val version: String) : Ap
     // ---- microphone -> Home Assistant
     private val sendQueue = ArrayBlockingQueue<ByteArray>(100)
     private var sender: Thread? = null
+    // microphone level for the debug log (peak / average over ~10 s)
+    @Volatile private var levelPeak = 0
+    @Volatile private var levelSumSq = 0.0
+    @Volatile private var levelCount = 0L
+    private var lastLevelLog = 0L
+
     private val micListener = MicHub.Listener { pcm ->
+        if (BridgeLog.verbose) {
+            var peak = levelPeak
+            var sum = 0.0
+            for (v in pcm) { val a = kotlin.math.abs(v.toInt()); if (a > peak) peak = a; sum += a.toDouble() * a }
+            levelPeak = peak; levelSumSq += sum; levelCount += pcm.size
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastLevelLog > 10_000 && levelCount > 0) {
+                lastLevelLog = now
+                fun db(x: Double) = if (x <= 0) -99 else Math.round(20 * kotlin.math.log10(x / 32768.0)).toInt()
+                BridgeLog.i("Sprach-Satellit: Mikrofonpegel Spitze ${db(levelPeak.toDouble())} dBFS, " +
+                    "Mittel ${db(kotlin.math.sqrt(levelSumSq / levelCount))} dBFS" + (if (streaming) " (sendet)" else ""))
+                levelPeak = 0; levelSumSq = 0.0; levelCount = 0
+            }
+        }
         if (streaming) {
             val b = ByteArray(pcm.size * 2)
             for (i in pcm.indices) {
@@ -309,8 +329,9 @@ class VoiceSatellite(private val ctx: Context, private val version: String) : Ap
         runActive = true
         awaitingRunStart = true
         requestSentAt = SystemClock.elapsedRealtime()
-        // noise suppression 2 + auto gain 31 dBFS: Home Assistant cleans the tablet microphone up
-        if (!server.sendVoiceRequest(true, convId, flags, noiseSuppression = 2, autoGain = 31, volumeMultiplier = 1f)) {
+        // audio processing in Home Assistant, adjustable via config/set (default off like ESPHome)
+        if (!server.sendVoiceRequest(true, convId, flags, noiseSuppression = cfg.voiceNoiseSuppression,
+                autoGain = cfg.voiceAutoGain, volumeMultiplier = cfg.voiceVolumeMultiplier)) {
             streaming = false; runActive = false
         }
     }

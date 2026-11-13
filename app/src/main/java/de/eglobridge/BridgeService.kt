@@ -197,6 +197,16 @@ class BridgeService : Service(), MeshListener {
                 restart = true
             }
         }
+        if (o.has("voice_noise_suppression")) {
+            cfg.voiceNoiseSuppression = o.optInt("voice_noise_suppression"); changed += "Rauschunterdrückung ${cfg.voiceNoiseSuppression}"
+        }
+        if (o.has("voice_auto_gain")) {
+            cfg.voiceAutoGain = o.optInt("voice_auto_gain"); changed += "Auto-Verstärkung ${cfg.voiceAutoGain} dBFS"
+        }
+        if (o.has("voice_volume_multiplier")) {
+            cfg.voiceVolumeMultiplier = o.optDouble("voice_volume_multiplier", 1.0).toFloat()
+            changed += "Mikrofon-Verstärkung ×${cfg.voiceVolumeMultiplier}"
+        }
         if (o.has("media_volume")) {
             DeviceInfo.setMediaVolume(this, o.optInt("media_volume")); changed += "Lautstärke"
         }

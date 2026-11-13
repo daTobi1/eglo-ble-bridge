@@ -156,6 +156,19 @@ class Config(context: Context) {
     var voiceMuted: Boolean
         get() = p.getBoolean("voiceMuted", false)
         set(v) = p.edit().putBoolean("voiceMuted", v).apply()
+    /** Audio processing Home Assistant applies to the microphone (0 = off, like ESPHome's default). 0..4 */
+    var voiceNoiseSuppression: Int
+        get() = p.getInt("voiceNoise", 0)
+        set(v) = p.edit().putInt("voiceNoise", v.coerceIn(0, 4)).apply()
+    /** Automatic gain target in dBFS, 0 = off. 0..31 */
+    var voiceAutoGain: Int
+        get() = p.getInt("voiceGain", 0)
+        set(v) = p.edit().putInt("voiceGain", v.coerceIn(0, 31)).apply()
+    /** Fixed microphone gain applied by Home Assistant. */
+    var voiceVolumeMultiplier: Float
+        get() = p.getFloat("voiceVolume", 1f)
+        set(v) = p.edit().putFloat("voiceVolume", v.coerceIn(0.5f, 8f)).apply()
+
     /**
      * Stable pseudo MAC address for Home Assistant (unique id of the ESPHome device). Android hides
      * the real one, so it is derived once from the Android id ("locally administered" range 02:…).
