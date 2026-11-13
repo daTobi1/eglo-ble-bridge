@@ -10,6 +10,8 @@ object KioskControl {
         fun setScreen(on: Boolean)
         fun setBrightness(percent: Int)
         fun showUpdate(info: Updater.Info)
+        /** Leave kiosk mode (kiosk switched off remotely). */
+        fun exit()
     }
 
     /** The visible kiosk activity, if any. Calls must be made on the main thread. */

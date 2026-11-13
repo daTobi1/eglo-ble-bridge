@@ -80,9 +80,11 @@ class BridgeService : Service(), MeshListener {
         lights = lc
         controller = lc
         val name = cfg.bridgeName
-        mqtt = MqttBridge(handler, m, lc, version, MqttBridge.slug(name), name).also {
+        mqtt = MqttBridge(handler, m, lc, version, cfg.bridgeId, name).also {
             hub = it
             it.onServiceCommand = { cmd -> handler.post { onServiceCommand(cmd) } }
+            it.onConfigSet = { json -> handler.post { onConfigSet(json) } }
+            it.deviceInfo = { DeviceInfo.collect(this) }
             it.hasMicPermission = {
                 Build.VERSION.SDK_INT < 23 ||
                     checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
@@ -129,6 +131,85 @@ class BridgeService : Service(), MeshListener {
         mesh = null
         mqtt = null
         lights = null
+    }
+
+    /**
+     * Settings sent over MQTT (`eglo_bridge/bridge/<id>/config/set`, JSON). Unknown keys are ignored.
+     * MQTT changes are only saved after a test connection with the new values worked, so a typo
+     * cannot cut the tablet off.
+     */
+    private fun onConfigSet(o: org.json.JSONObject) {
+        val cfg = Config(this)
+        val changed = mutableListOf<String>()
+        var restart = false
+        val main = android.os.Handler(android.os.Looper.getMainLooper())
+
+        o.optString("name").trim().takeIf { it.isNotEmpty() && it != cfg.bridgeName }?.let {
+            cfg.bridgeName = it; changed += "Name „$it“"; restart = true
+        }
+        if (o.has("debug_log")) {
+            cfg.debugLog = o.optBoolean("debug_log"); BridgeLog.verbose = cfg.debugLog; changed += "Debug-Log"
+        }
+        if (o.has("kiosk_url")) o.optString("kiosk_url").trim().takeIf { it.isNotEmpty() }?.let { u ->
+            cfg.kioskUrl = u; main.post { KioskControl.ui?.loadUrl(cfg.kioskUrl) }; changed += "Dashboard-Adresse"
+        }
+        if (o.has("kiosk_pin")) o.optString("kiosk_pin").trim().takeIf { it.isNotEmpty() }?.let {
+            cfg.kioskPin = it; changed += "Kiosk-PIN"
+        }
+        if (o.has("kiosk_screen_timeout")) {
+            cfg.kioskScreenTimeout = o.optInt("kiosk_screen_timeout").coerceIn(0, 120); changed += "Bildschirm-Timeout"
+        }
+        if (o.has("kiosk_brightness")) {
+            val b = o.optInt("kiosk_brightness").coerceIn(1, 100)
+            cfg.kioskBrightness = b; main.post { KioskControl.ui?.setBrightness(b) }; changed += "Helligkeit"
+        }
+        if (o.has("kiosk_enabled")) {
+            val on = o.optBoolean("kiosk_enabled")
+            if (on != cfg.kioskEnabled || (on && KioskControl.ui == null)) {
+                changed += if (on) "Kiosk an" else "Kiosk aus"
+                if (on) {
+                    cfg.kioskEnabled = true
+                    main.post {
+                        try {
+                            startActivity(Intent(this, KioskActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        } catch (t: Throwable) { BridgeLog.w("Kiosk konnte nicht gestartet werden: ${t.message}") }
+                    }
+                } else {
+                    cfg.kioskEnabled = false
+                    main.post { KioskControl.ui?.exit() }
+                }
+            }
+        }
+        if (o.has("media_volume")) {
+            DeviceInfo.setMediaVolume(this, o.optInt("media_volume")); changed += "Lautstärke"
+        }
+        if (o.has("awox_user") || o.has("awox_password")) {
+            o.optString("awox_user").trim().takeIf { it.isNotEmpty() }?.let { cfg.awoxUser = it }
+            o.optString("awox_password").takeIf { it.isNotEmpty() }?.let { cfg.awoxPassword = it }
+            changed += "AwoX-Konto"
+        }
+        if (changed.isNotEmpty()) BridgeLog.i("Einstellungen geändert: " + changed.joinToString(", "))
+
+        val mqttKeys = listOf("mqtt_host", "mqtt_port", "mqtt_user", "mqtt_password")
+        if (mqttKeys.any { o.has(it) }) {
+            val host = o.optString("mqtt_host", cfg.mqttHost).trim().ifEmpty { cfg.mqttHost }
+            val port = o.optInt("mqtt_port", cfg.mqttPort)
+            val user = if (o.has("mqtt_user")) o.optString("mqtt_user").trim() else cfg.mqttUser
+            val pass = if (o.has("mqtt_password")) o.optString("mqtt_password") else cfg.mqttPassword
+            Thread {
+                if (MqttBridge.testConnection(host, port, user, pass)) {
+                    cfg.mqttHost = host; cfg.mqttPort = port; cfg.mqttUser = user; cfg.mqttPassword = pass
+                    BridgeLog.i("MQTT-Zugang geändert ($host:$port) – Bridge startet neu")
+                    handler.post { onServiceCommand("restart") }
+                } else {
+                    BridgeLog.e("MQTT-Änderung verworfen: Testverbindung zu $host:$port fehlgeschlagen")
+                }
+            }.start()
+        }
+
+        if (o.optBoolean("reimport")) onServiceCommand("reimport")
+        else if (restart || o.optBoolean("restart")) onServiceCommand("restart")
+        else mqtt?.publishConfig()
     }
 
     /** Commands that arrive from Home Assistant (the tablets run in kiosk mode). */

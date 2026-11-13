@@ -22,7 +22,7 @@ sudo ./install.sh
 
 Das Skript installiert BlueZ, legt den Dienstbenutzer `eglo-bridge` an und richtet die Bridge in `/opt/eglo-bridge` ein. Danach fragt es nach:
 
-- **Name der Bridge**, z. B. `Pi Küche`. Er muss sich von den Tablets unterscheiden, weil er die MQTT-Kennung bildet.
+- **Name der Bridge**, z. B. `Pi Küche`. Er muss sich von den Tablets unterscheiden, weil beim ersten Start daraus die MQTT-Kennung gebildet wird. Diese bleibt danach fest; ein späteres Umbenennen (Entität „Name“ in HA oder `config/set`) ändert nur den Anzeigenamen.
 - **MQTT** (Mosquitto in Home Assistant): IP, Port 1883, Benutzer, Passwort
 - **AwoX/EGLO-Connect-Konto**, damit die Bridge Mesh-Zugangsdaten und Lampen aus der Cloud importieren kann
 

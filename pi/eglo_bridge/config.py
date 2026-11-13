@@ -70,6 +70,8 @@ class Config:
     mqttPassword: str = ""  # noqa: N815
     #: name of this bridge in Home Assistant (also its MQTT id) - must be unique per bridge
     bridgeName: str = field(default_factory=_default_bridge_name)  # noqa: N815
+    #: MQTT id, fixed on first start (from the name then) so a rename keeps the HA device
+    bridgeId: str = ""  # noqa: N815
     debugLog: bool = False  # noqa: N815
     musicSensitivity: float = 1.0  # noqa: N815
     #: Bluetooth adapter, e.g. "hci0" (empty = default)

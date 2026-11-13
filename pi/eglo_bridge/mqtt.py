@@ -14,7 +14,11 @@ All handlers run on the event loop; paho's network thread only hands messages ov
 from __future__ import annotations
 
 import json
+import os
+import platform
 import re
+import shutil
+import socket
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -76,6 +80,66 @@ def _hw_model() -> str:
         return "Linux"
 
 
+def device_info() -> dict:
+    """Facts about this computer for the retained config topic."""
+    info: dict = {"hostname": socket.gethostname(), "model": _hw_model(), "python": platform.python_version()}
+    try:
+        for line in Path("/etc/os-release").read_text().splitlines():
+            if line.startswith("PRETTY_NAME="):
+                info["os"] = line.split("=", 1)[1].strip('"')
+    except OSError:
+        pass
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("192.0.2.1", 9))  # no packet is sent; picks the outgoing interface
+        info["ip"] = s.getsockname()[0]
+        s.close()
+    except OSError:
+        pass
+    try:
+        info["uptime_h"] = round(float(Path("/proc/uptime").read_text().split()[0]) / 3600, 1)
+    except (OSError, ValueError):
+        pass
+    try:
+        info["storage_free_mb"] = shutil.disk_usage("/").free // (1024 * 1024)
+    except OSError:
+        pass
+    try:
+        info["cpu_temp_c"] = round(int(Path("/sys/class/thermal/thermal_zone0/temp").read_text()) / 1000, 1)
+    except (OSError, ValueError):
+        pass
+    try:
+        info["load"] = round(os.getloadavg()[0], 2)
+    except OSError:
+        pass
+    return info
+
+
+def test_connection(host: str, port: int, user: str, password: str) -> bool:
+    """True if a broker accepts these credentials (blocking, a few seconds at most)."""
+    import threading
+    ok = threading.Event()
+    done = threading.Event()
+    c = paho.Client(paho.CallbackAPIVersion.VERSION2, client_id=f"eglo-bridge-test-{int(time.time()) % 100000}")
+    if user:
+        c.username_pw_set(user, password)
+
+    def on_connect(_c, _u, _f, reason_code, _p) -> None:
+        if not reason_code.is_failure:
+            ok.set()
+        done.set()
+    c.on_connect = on_connect
+    try:
+        c.connect(host, int(port), keepalive=10)
+        c.loop_start()
+        done.wait(8)
+        c.disconnect()
+        c.loop_stop()
+    except Exception:  # noqa: BLE001
+        return False
+    return ok.is_set()
+
+
 @dataclass
 class BridgeInfo:
     name: str
@@ -112,6 +176,11 @@ class MqttBridge:
         self.brightness_topic = f"{t}/brightness"
         self.screen_timeout_topic = f"{t}/screen_timeout"
         self.screen = None
+        self.config_topic = f"{t}/config"
+        self.config_set = f"{t}/config/set"
+        #: settings changed remotely (dict from config/set)
+        self.on_config_set: Callable[[dict], None] | None = None
+        self.cfg: Config | None = None
 
         #: commands for the service: restart, reimport
         self.on_service_command: Callable[[str], None] | None = None
@@ -152,6 +221,7 @@ class MqttBridge:
     # ================================================================= lifecycle
 
     def start(self, cfg: Config) -> None:
+        self.cfg = cfg
         self.devices = list(cfg.devices)
         self.running = True
         self.bridges[self.bridge_id] = BridgeInfo(self.bridge_name, True, self.has_mic)
@@ -167,11 +237,13 @@ class MqttBridge:
 
         self.lights.on_mic_frame = mic_frame
         self.sched.post_delayed(RECOMPUTE_S, self._recompute_tick, key="mqtt-recompute")
+        self.sched.post_delayed(600.0, self._config_tick, key="mqtt-config")
         self._connect(cfg)
 
     async def stop(self) -> None:
         self.running = False
         self.sched.remove("mqtt-recompute")
+        self.sched.remove("mqtt-config")
         self.lights.stop_mic()
         c = self.client
         if c is None:
@@ -258,7 +330,7 @@ class MqttBridge:
         # what we believed while offline is not on the broker: re-learn from retained messages
         self.lamp_avail.clear()
         topics = [f"{BASE}/bridge/+/status", f"{BASE}/bridge/+/info", self.cmd_topic, self.debug_set,
-                  f"{self.lamp_assign}/+/set", f"{self.all_assign}/set",
+                  f"{self.lamp_assign}/+/set", f"{self.all_assign}/set", self.config_set,
                   f"{BASE}/light/#", f"{BASE}/music/#", SENS, SENS_SET, SPEED, SPEED_SET,
                   f"{FIRE_SPEED}/#", f"{FIRE_STRENGTH}/#", f"{FIRE_BRIGHT}/#"]
         if self._has_screen:
@@ -277,6 +349,7 @@ class MqttBridge:
         self._publish_discovery()
         self._publish_assignment()
         self.publish_screen()
+        self.publish_config()
         self.published.clear()  # force re-publish of link scores
         # give retained messages a moment to arrive, then decide ownership
         self.sched.post_delayed(2.5, lambda: (self._recompute(), self._ensure_selection_defaults()))
@@ -419,6 +492,16 @@ class MqttBridge:
             "name": "Mikrofon", "unique_id": f"eglo_bridge_{bid}_mic", "state_topic": self.mic_topic,
             "availability_topic": self.avail, "icon": "mdi:microphone", "entity_category": "diagnostic",
             "device": bdev})
+        self._pub_json(f"homeassistant/text/eglo_bridge_{bid}_name/config", {
+            "name": "Name", "unique_id": f"eglo_bridge_{bid}_name", "command_topic": self.config_set,
+            "command_template": '{"name": {{ value | tojson }}}', "state_topic": self.config_topic,
+            "value_template": "{{ value_json.name }}", "availability_topic": self.avail,
+            "min": 1, "max": 40, "icon": "mdi:rename", "entity_category": "config", "device": bdev})
+        self._pub_json(f"homeassistant/sensor/eglo_bridge_{bid}_ip/config", {
+            "name": "IP-Adresse", "unique_id": f"eglo_bridge_{bid}_ip", "state_topic": self.config_topic,
+            "value_template": "{{ value_json.device.ip }}", "json_attributes_topic": self.config_topic,
+            "json_attributes_template": "{{ value_json.device | tojson }}", "availability_topic": self.avail,
+            "icon": "mdi:ip-network", "entity_category": "diagnostic", "device": bdev})
         if self._has_screen:
             self._publish_screen_discovery(bdev)
 
@@ -526,6 +609,10 @@ class MqttBridge:
         self._publish(SOURCE_NAME, src.name if src else self.bridge_name, retain=True)
 
     # ================================================================= ownership
+
+    def _config_tick(self) -> None:
+        self.publish_config()
+        self.sched.post_delayed(600.0, self._config_tick, key="mqtt-config")
 
     def _recompute_tick(self) -> None:
         self._recompute()
@@ -771,10 +858,41 @@ class MqttBridge:
 
     # ================================================================= incoming
 
+    def publish_config(self) -> None:
+        """Retained snapshot of the settings (no passwords) and computer facts, see config/set."""
+        c = self.cfg
+        if c is None:
+            return
+        settings = {"mqtt_host": c.mqttHost, "mqtt_port": c.mqttPort, "mqtt_user": c.mqttUser,
+                    "awox_user": c.awoxUser, "debug_log": log.verbose, "adapter": c.adapter,
+                    "lamps": sum(1 for d in c.devices if d.is_light),
+                    "assigned_lamps": "all" if c.assignedLamps is None else sorted(c.assignedLamps)}
+        if self._has_screen:
+            settings["screen_timeout"] = self.screen.timeout_min
+            settings["screen_brightness"] = self.screen.brightness_pct
+        try:
+            dev = device_info()
+        except Exception:  # noqa: BLE001
+            dev = {}
+        self._pub_json(self.config_topic, {"bridge_id": self.bridge_id, "name": self.bridge_name,
+                                           "platform": "linux", "version": self.version,
+                                           "settings": settings, "device": dev})
+
     def _on_message(self, topic: str, payload: str) -> None:  # noqa: C901 - mirrors the Kotlin dispatcher
         if not self.running:
             return
         v = payload.strip()
+        if topic == self.config_set:
+            try:
+                data = json.loads(v)
+                if not isinstance(data, dict):
+                    raise ValueError
+            except ValueError:
+                log.w(f"Ungültige Einstellungen: {v[:100]}")
+                return
+            if self.on_config_set:
+                self.on_config_set(data)
+            return
         if topic == self.cmd_topic:
             if v == "reconnect":
                 self.mesh.reconnect()

@@ -292,6 +292,10 @@ class KioskActivity : Activity(), KioskControl.Ui {
 
     // ------------------------------------------------------------------ KioskControl.Ui (main thread)
 
+    override fun exit() {
+        if (!isFinishing) exitKiosk()
+    }
+
     override fun reload() {
         errorView.visibility = View.GONE
         web.reload()

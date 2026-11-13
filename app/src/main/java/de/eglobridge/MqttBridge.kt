@@ -64,6 +64,21 @@ class MqttBridge(
                 .replace(Regex("[^a-z0-9]+"), "_").trim('_')
             return s.ifEmpty { "tablet" }
         }
+
+        /** True if a broker accepts these credentials (blocking, a few seconds at most). */
+        fun testConnection(host: String, port: Int, user: String, password: String): Boolean = try {
+            val c = MqttAsyncClient("tcp://$host:$port", "eglo-bridge-test-" + System.currentTimeMillis() % 100000, MemoryPersistence())
+            val opts = MqttConnectOptions().apply {
+                isCleanSession = true
+                connectionTimeout = 8
+                if (user.isNotEmpty()) { userName = user; this.password = password.toCharArray() }
+            }
+            c.connect(opts).waitForCompletion(10000)
+            val ok = c.isConnected
+            try { c.disconnect().waitForCompletion(2000) } catch (_: Throwable) { }
+            try { c.close() } catch (_: Throwable) { }
+            ok
+        } catch (_: Throwable) { false }
     }
 
     /** [mic] = bridge can listen; the Raspberry Pi port announces "mic": false without a microphone. */
@@ -90,6 +105,12 @@ class MqttBridge(
 
     /** Commands for the service: restart, reimport, check_update, install_update. */
     @Volatile var onServiceCommand: ((String) -> Unit)? = null
+    /** Settings changed remotely (JSON from `<bridge>/config/set`). */
+    @Volatile var onConfigSet: ((JSONObject) -> Unit)? = null
+    /** Facts about the tablet (model, Android, WebView, IP …) for the retained config topic. */
+    @Volatile var deviceInfo: () -> JSONObject = { JSONObject() }
+    private val configTopic = "$bTopic/config"
+    private val configSet = "$bTopic/config/set"
     @Volatile var hasMicPermission: () -> Boolean = { true }
     private var micState = ""
     private val screenTopic = "$bTopic/screen"
@@ -144,15 +165,49 @@ class MqttBridge(
             else lights.applyMusicFrame(r, g, b, bright, beat)
         }
         handler.postDelayed(recomputeRunnable, RECOMPUTE_MS)
+        handler.postDelayed(configRunnable, 10 * 60 * 1000L)
         connect(cfg)
     }
 
     private val kioskListener: () -> Unit = { handler.post { publishKiosk() } }
 
+    private val configRunnable = object : Runnable {
+        override fun run() {
+            publishConfig()
+            handler.postDelayed(this, 10 * 60 * 1000L)
+        }
+    }
+
+    /**
+     * Retained snapshot of this bridge's settings (no passwords) and device facts, so Home
+     * Assistant and assistants can read what can be changed via `config/set`.
+     */
+    fun publishConfig() {
+        val c = config ?: return
+        val o = JSONObject()
+            .put("bridge_id", bridgeId)
+            .put("name", bridgeName)
+            .put("platform", "android")
+            .put("version", version)
+            .put("settings", JSONObject()
+                .put("mqtt_host", c.mqttHost).put("mqtt_port", c.mqttPort).put("mqtt_user", c.mqttUser)
+                .put("awox_user", c.awoxUser)
+                .put("debug_log", BridgeLog.verbose)
+                .put("kiosk_enabled", c.kioskEnabled)
+                .put("kiosk_url", c.kioskUrl)
+                .put("kiosk_screen_timeout", c.kioskScreenTimeout)
+                .put("kiosk_brightness", c.kioskBrightness)
+                .put("lamps", c.devices.count { it.isLight })
+                .put("assigned_lamps", c.assignedLamps?.let { JSONArray(it.sorted()) } ?: "all"))
+            .put("device", try { deviceInfo() } catch (_: Throwable) { JSONObject() })
+        publish(configTopic, o.toString(), retain = true, qos = 1)
+    }
+
     fun stop() {
         KioskControl.listeners.remove(kioskListener)
         running = false
         handler.removeCallbacks(recomputeRunnable)
+        handler.removeCallbacks(configRunnable)
         lights.stopMic()
         val c = client ?: return
         client = null
@@ -244,8 +299,8 @@ class MqttBridge(
                 "$screenTopic/set", "$brightTopic/set", "$timeoutTopic/set", "$urlTopic/set",
                 "$BASE/light/#", "$BASE/music/#", SENS, SENS_SET, SPEED, SPEED_SET,
                 "$FIRE_SPEED/#", "$FIRE_STRENGTH/#", "$FIRE_BRIGHT/#",
-                "$lampAssign/+/set", "$allAssign/set"
-            ), IntArray(20))
+                "$lampAssign/+/set", "$allAssign/set", configSet
+            ), IntArray(21))
         } catch (t: Throwable) {
             BridgeLog.e("MQTT-Subscribe fehlgeschlagen", t)
         }
@@ -257,6 +312,7 @@ class MqttBridge(
         micState = ""
         updateMic()
         publishKiosk()
+        publishConfig()
         publishUpdate(inProgress = false)
         cleanupLegacyDiscovery()
         publishDiscovery()
@@ -577,6 +633,43 @@ class MqttBridge(
             .put("state_topic", kioskTopic)
             .put("availability_topic", avail)
             .put("icon", "mdi:monitor-dashboard")
+            .put("entity_category", "diagnostic")
+            .put("device", bridgeDevice).toString(), retain = true, qos = 1)
+
+        publish("homeassistant/text/eglo_bridge_${bridgeId}_name/config", JSONObject()
+            .put("name", "Name")
+            .put("unique_id", "eglo_bridge_${bridgeId}_name")
+            .put("command_topic", configSet)
+            .put("command_template", "{\"name\": {{ value | tojson }}}")
+            .put("state_topic", configTopic)
+            .put("value_template", "{{ value_json.name }}")
+            .put("availability_topic", avail)
+            .put("min", 1).put("max", 40)
+            .put("icon", "mdi:rename")
+            .put("entity_category", "config")
+            .put("device", bridgeDevice).toString(), retain = true, qos = 1)
+        publish("homeassistant/number/eglo_bridge_${bridgeId}_volume/config", JSONObject()
+            .put("name", "Medienlautstärke")
+            .put("unique_id", "eglo_bridge_${bridgeId}_volume")
+            .put("command_topic", configSet)
+            .put("command_template", "{\"media_volume\": {{ value | int }}}")
+            .put("state_topic", configTopic)
+            .put("value_template", "{{ value_json.device.media_volume }}")
+            .put("availability_topic", avail)
+            .put("min", 0).put("max", 100).put("step", 5)
+            .put("unit_of_measurement", "%")
+            .put("mode", "slider")
+            .put("icon", "mdi:volume-high")
+            .put("device", bridgeDevice).toString(), retain = true, qos = 1)
+        publish("homeassistant/sensor/eglo_bridge_${bridgeId}_ip/config", JSONObject()
+            .put("name", "IP-Adresse")
+            .put("unique_id", "eglo_bridge_${bridgeId}_ip")
+            .put("state_topic", configTopic)
+            .put("value_template", "{{ value_json.device.ip }}")
+            .put("json_attributes_topic", configTopic)
+            .put("json_attributes_template", "{{ value_json.device | tojson }}")
+            .put("availability_topic", avail)
+            .put("icon", "mdi:ip-network")
             .put("entity_category", "diagnostic")
             .put("device", bridgeDevice).toString(), retain = true, qos = 1)
 
@@ -945,6 +1038,12 @@ class MqttBridge(
             return
         }
         when (topic) {
+            configSet -> {
+                try { onConfigSet?.invoke(JSONObject(v)) } catch (_: Exception) {
+                    BridgeLog.w("Ungültige Einstellungen: ${v.take(100)}")
+                }
+                return
+            }
             cmdTopic -> {
                 when (v) {
                     "reconnect" -> mesh.reconnect()

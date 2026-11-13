@@ -9,6 +9,8 @@ Android-App, die ein altes Tablet zur **Brücke zwischen EGLO-Connect/AwoX-Bluet
 
 > **Raspberry Pi / Linux:** Dieselbe Bridge gibt es auch als Linux-Dienst, siehe [`pi/`](pi/README.md). Pi und Tablets arbeiten zusammen; jede Lampe wird von der Bridge mit dem besten Empfang gesteuert.
 
+> **KI-Assistent / MCP:** Mit dem MCP-Server in [`mcp/`](mcp/README.md) kann z. B. Claude Lampen und Bridges direkt per MQTT steuern.
+
 ## Installation
 
 1. Auf dem Tablet die APK aus dem Release **[latest](../../releases/tag/latest)** herunterladen und installieren.
@@ -18,6 +20,8 @@ Android-App, die ein altes Tablet zur **Brücke zwischen EGLO-Connect/AwoX-Bluet
 5. **Speichern & Starten**.
 
 Die Lampen erscheinen in Home Assistant unter *Einstellungen → Geräte & Dienste → MQTT*.
+
+Der Name des Tablets lässt sich später in Home Assistant (Entität „Name“) oder per MQTT `eglo_bridge/bridge/<id>/config/set` ändern – Gerät und Entitäten in HA bleiben dabei erhalten. Über `config/set` lassen sich außerdem Kiosk, Dashboard-Adresse, PIN, Helligkeit, Medienlautstärke, MQTT- und AwoX-Zugang ändern; `eglo_bridge/bridge/<id>/config` zeigt die aktuellen Einstellungen und Geräteinfos.
 
 ## Zuständigkeit mehrerer Bridges
 

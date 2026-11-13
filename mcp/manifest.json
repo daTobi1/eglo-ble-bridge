@@ -1,0 +1,132 @@
+{
+  "manifest_version": "0.3",
+  "name": "eglo-bridge",
+  "display_name": "EGLO BLE Bridge",
+  "version": "1.1.0",
+  "description": "Steuert EGLO-Connect/AwoX-Lampen und die EGLO-BLE-Bridges (Tablets, Raspberry Pi) über MQTT.",
+  "long_description": "Liest den Zustand aller EGLO-Bridges und Lampen aus dem MQTT-Broker und sendet dieselben Befehle wie Home Assistant: Lampen schalten (Helligkeit, Farbtemperatur, RGB, Effekte), Favoriten, Musikmodus/Lagerfeuer, Bridge-Log, Debug, Neu verbinden/Neustart/Reimport/Update, Tablet-Bildschirm und Kiosk, Zuständigkeit der Bridges.",
+  "author": {
+    "name": "daTobi1",
+    "url": "https://github.com/daTobi1/eglo-ble-bridge"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/daTobi1/eglo-ble-bridge"
+  },
+  "homepage": "https://github.com/daTobi1/eglo-ble-bridge/tree/main/mcp",
+  "license": "MIT",
+  "server": {
+    "type": "node",
+    "entry_point": "server/server.mjs",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/server/server.mjs"
+      ],
+      "env": {
+        "EGLO_MQTT_URL": "${user_config.mqtt_url}",
+        "EGLO_MQTT_USER": "${user_config.mqtt_user}",
+        "EGLO_MQTT_PASSWORD": "${user_config.mqtt_password}"
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "eglo_overview",
+      "description": "Überblick über Bridges und Lampen"
+    },
+    {
+      "name": "eglo_get_lamp",
+      "description": "Details einer Lampe inkl. Empfang je Bridge"
+    },
+    {
+      "name": "eglo_set_light",
+      "description": "Lampen schalten: an/aus, Helligkeit, Kelvin, RGB, Effekt"
+    },
+    {
+      "name": "eglo_favorite",
+      "description": "Favorit abrufen/speichern"
+    },
+    {
+      "name": "eglo_lamp_setting",
+      "description": "Effekt-Einstellung einer Lampe"
+    },
+    {
+      "name": "eglo_effects",
+      "description": "Musikmodus, Musikquelle, Effekt-/Lagerfeuer-Einstellungen"
+    },
+    {
+      "name": "eglo_list_bridges",
+      "description": "Bridges mit Status, Akku, Bildschirm, Update"
+    },
+    {
+      "name": "eglo_bridge_log",
+      "description": "Log einer Bridge"
+    },
+    {
+      "name": "eglo_bridge_debug",
+      "description": "Debug-Log an/aus"
+    },
+    {
+      "name": "eglo_bridge_command",
+      "description": "reconnect, restart, reimport, check_update, install_update, reload_kiosk"
+    },
+    {
+      "name": "eglo_kiosk",
+      "description": "Tablet-Bildschirm, Helligkeit, Timeout, Dashboard-URL"
+    },
+    {
+      "name": "eglo_assign",
+      "description": "Zuständigkeit einer Bridge für Lampen"
+    },
+    {
+      "name": "eglo_configure_bridge",
+      "description": "Bridge/Tablet einstellen: Name, Kiosk, PIN, Lautstärke, MQTT, AwoX, Debug"
+    },
+    {
+      "name": "eglo_mqtt_topics",
+      "description": "MQTT-Rohdaten zur Diagnose"
+    }
+  ],
+  "user_config": {
+    "mqtt_url": {
+      "type": "string",
+      "title": "MQTT-Broker",
+      "description": "z. B. mqtt://192.168.178.120:1883",
+      "default": "mqtt://192.168.178.120:1883",
+      "required": true
+    },
+    "mqtt_user": {
+      "type": "string",
+      "title": "MQTT-Benutzer",
+      "description": "Mosquitto-Login oder Home-Assistant-Benutzer",
+      "required": false
+    },
+    "mqtt_password": {
+      "type": "string",
+      "title": "MQTT-Passwort",
+      "sensitive": true,
+      "required": false,
+      "description": "Passwort zum MQTT-Benutzer"
+    }
+  },
+  "compatibility": {
+    "platforms": [
+      "win32",
+      "darwin",
+      "linux"
+    ],
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
+  },
+  "keywords": [
+    "eglo",
+    "awox",
+    "ble",
+    "mesh",
+    "mqtt",
+    "home-assistant",
+    "lights"
+  ]
+}
