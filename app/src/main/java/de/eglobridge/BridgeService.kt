@@ -52,7 +52,11 @@ class BridgeService : Service(), MeshListener {
         handler = Handler(thread.looper)
         createChannel()
         startForeground(NOTIF_ID, buildNotification("startet …"))
+        mcp.start()
     }
+
+    /** MCP endpoint for assistants (port 8765); uses whatever MQTT connection the bridge has. */
+    private val mcp = McpServer({ hub })
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (mesh == null) startBridge()
@@ -297,6 +301,7 @@ class BridgeService : Service(), MeshListener {
         running = false
         meshState = "gestoppt"
         BridgeLog.i("Bridge gestoppt")
+        mcp.stop()
         stopBridge()
         handler.postDelayed({ thread.quitSafely() }, 1000)
         releaseLocks()

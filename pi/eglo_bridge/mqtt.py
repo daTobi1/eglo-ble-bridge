@@ -181,6 +181,8 @@ class MqttBridge:
         #: settings changed remotely (dict from config/set)
         self.on_config_set: Callable[[dict], None] | None = None
         self.cfg: Config | None = None
+        #: last payload of every received topic (for the MCP endpoint, see mcp.py)
+        self.topic_cache: dict[str, str] = {}
 
         #: commands for the service: restart, reimport
         self.on_service_command: Callable[[str], None] | None = None
@@ -296,6 +298,11 @@ class MqttBridge:
 
         def on_message(_c, _u, msg) -> None:
             payload = msg.payload.decode(errors="replace")
+            if msg.topic != MUSIC_FRAME:
+                if payload:
+                    self.topic_cache[msg.topic] = payload
+                else:
+                    self.topic_cache.pop(msg.topic, None)
             if msg.topic == MUSIC_FRAME:
                 self.sched.post_threadsafe(self._on_frame, payload)
             else:
@@ -331,6 +338,7 @@ class MqttBridge:
         self.lamp_avail.clear()
         topics = [f"{BASE}/bridge/+/status", f"{BASE}/bridge/+/info", self.cmd_topic, self.debug_set,
                   f"{self.lamp_assign}/+/set", f"{self.all_assign}/set", self.config_set,
+                  f"{BASE}/bridge/+/state", f"{BASE}/bridge/+/config",
                   f"{BASE}/light/#", f"{BASE}/music/#", SENS, SENS_SET, SPEED, SPEED_SET,
                   f"{FIRE_SPEED}/#", f"{FIRE_STRENGTH}/#", f"{FIRE_BRIGHT}/#"]
         if self._has_screen:
@@ -857,6 +865,13 @@ class MqttBridge:
         self.lights.apply_music_frame(r, g, b, br, p[4].strip() == "1")
 
     # ================================================================= incoming
+
+    def topics(self) -> dict[str, str]:
+        return dict(self.topic_cache)
+
+    def send(self, topic: str, payload: str, retain: bool = False) -> None:
+        """Publish on behalf of the MCP endpoint (same broker login as the bridge)."""
+        self._publish(topic, payload, retain=retain, qos=1)
 
     def publish_config(self) -> None:
         """Retained snapshot of the settings (no passwords) and computer facts, see config/set."""
