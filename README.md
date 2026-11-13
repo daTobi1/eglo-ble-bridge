@@ -9,7 +9,7 @@ Android-App, die ein altes Tablet zur **Brücke zwischen EGLO-Connect/AwoX-Bluet
 
 > **Raspberry Pi / Linux:** Dieselbe Bridge gibt es auch als Linux-Dienst, siehe [`pi/`](pi/README.md). Pi und Tablets arbeiten zusammen; jede Lampe wird von der Bridge mit dem besten Empfang gesteuert.
 
-> **KI-Assistent / MCP:** Jede Bridge hat einen MCP-Zugang auf Port 8765 (`http://<IP>:8765/mcp`), siehe [`mcp/`](mcp/README.md).
+> **KI-Assistent / MCP:** In der App unter *Einrichtung durch Assistent* wählbar: **zentral über Home Assistant** (Einstellungen per MQTT `config/set`), **dezentral** (eigener MCP-Zugang der Bridge auf Port 8765, `http://<IP>:8765/mcp`) oder **beides**. Siehe [`mcp/`](mcp/README.md).
 
 ## Installation
 

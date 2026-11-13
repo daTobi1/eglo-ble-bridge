@@ -205,6 +205,8 @@ class MqttBridge(
                 .put("kiosk_url", c.kioskUrl)
                 .put("kiosk_screen_timeout", c.kioskScreenTimeout)
                 .put("kiosk_brightness", c.kioskBrightness)
+                .put("assistant_access", c.assistantAccess)
+                .put("mcp_port", if (c.mcpEnabled) McpServer.PORT else JSONObject.NULL)
                 .put("lamps", c.devices.count { it.isLight })
                 .put("assigned_lamps", c.assignedLamps?.let { JSONArray(it.sorted()) } ?: "all"))
             .put("device", try { deviceInfo() } catch (_: Throwable) { JSONObject() })
@@ -646,6 +648,11 @@ class MqttBridge(
             .put("entity_category", "diagnostic")
             .put("device", bridgeDevice).toString(), retain = true, qos = 1)
 
+        if (config?.allowsMqttSetup == false) {
+            // decentral only: no setup entities in Home Assistant
+            publish("homeassistant/text/eglo_bridge_${bridgeId}_name/config", "", retain = true, qos = 1)
+            publish("homeassistant/number/eglo_bridge_${bridgeId}_volume/config", "", retain = true, qos = 1)
+        } else {
         publish("homeassistant/text/eglo_bridge_${bridgeId}_name/config", JSONObject()
             .put("name", "Name")
             .put("unique_id", "eglo_bridge_${bridgeId}_name")
@@ -671,6 +678,7 @@ class MqttBridge(
             .put("mode", "slider")
             .put("icon", "mdi:volume-high")
             .put("device", bridgeDevice).toString(), retain = true, qos = 1)
+        }
         publish("homeassistant/sensor/eglo_bridge_${bridgeId}_ip/config", JSONObject()
             .put("name", "IP-Adresse")
             .put("unique_id", "eglo_bridge_${bridgeId}_ip")
@@ -1049,6 +1057,10 @@ class MqttBridge(
         }
         when (topic) {
             configSet -> {
+                if (config?.allowsMqttSetup == false) {
+                    BridgeLog.w("Einrichtung über Home Assistant/MQTT ist ausgeschaltet (nur dezentral) – ignoriert")
+                    return
+                }
                 try { onConfigSet?.invoke(JSONObject(v)) } catch (_: Exception) {
                     BridgeLog.w("Ungültige Einstellungen: ${v.take(100)}")
                 }

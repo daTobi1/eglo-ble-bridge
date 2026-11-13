@@ -72,6 +72,17 @@ class Config:
     bridgeName: str = field(default_factory=_default_bridge_name)  # noqa: N815
     #: MQTT id, fixed on first start (from the name then) so a rename keeps the HA device
     bridgeId: str = ""  # noqa: N815
+    #: how an assistant may set up this bridge: "ha" (centrally via MQTT config/set),
+    #: "mcp" (decentrally via the bridge's MCP endpoint, port 8765) or "both"
+    assistantAccess: str = "ha"  # noqa: N815
+
+    @property
+    def allows_mqtt_setup(self) -> bool:
+        return self.assistantAccess != "mcp"
+
+    @property
+    def mcp_enabled(self) -> bool:
+        return self.assistantAccess in ("mcp", "both")
     debugLog: bool = False  # noqa: N815
     musicSensitivity: float = 1.0  # noqa: N815
     #: Bluetooth adapter, e.g. "hci0" (empty = default)

@@ -35,7 +35,10 @@ class McpServer(private val mqttProvider: () -> MqttBridge?, private val port: I
         running = true
         thread(name = "mcp-http", isDaemon = true) {
             try {
-                val s = ServerSocket(port).also { socket = it }
+                val s = ServerSocket().apply {
+                    reuseAddress = true
+                    bind(java.net.InetSocketAddress(port))
+                }.also { socket = it }
                 BridgeLog.i("MCP-Zugang bereit auf Port $port")
                 while (running) {
                     val c = try { s.accept() } catch (_: SocketException) { break }
@@ -292,6 +295,27 @@ class McpServer(private val mqttProvider: () -> MqttBridge?, private val port: I
         return cond()
     }
 
+    /** eglo_configure_bridge on another bridge's MCP endpoint (its IP from its retained config). */
+    private fun forward(target: JSONObject?, args: JSONObject): Any {
+        val ip = target?.optJSONObject("device")?.optString("ip").orEmpty()
+        val port = target?.optJSONObject("settings")?.optInt("mcp_port", PORT) ?: PORT
+        require(ip.isNotEmpty()) { "Bridge lässt nur dezentrale Einrichtung zu, ihre IP ist aber unbekannt" }
+        val req = JSONObject().put("jsonrpc", "2.0").put("id", 1).put("method", "tools/call")
+            .put("params", JSONObject().put("name", "eglo_configure_bridge").put("arguments", args))
+        val con = java.net.URL("http://$ip:$port/mcp").openConnection() as java.net.HttpURLConnection
+        con.requestMethod = "POST"
+        con.doOutput = true
+        con.connectTimeout = 5000
+        con.readTimeout = 40000
+        con.setRequestProperty("Content-Type", "application/json")
+        con.outputStream.use { it.write(req.toString().toByteArray()) }
+        val text = con.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
+        val res = JSONObject(text).optJSONObject("result") ?: throw IllegalStateException("Keine Antwort von $ip")
+        val out = res.optJSONArray("content")?.optJSONObject(0)?.optString("text").orEmpty()
+        if (res.optBoolean("isError")) throw IllegalStateException(out.removePrefix("Fehler: "))
+        return try { JSONObject(out) } catch (_: Exception) { out }
+    }
+
     private fun callTool(name: String, a: JSONObject): Any {
         val m = mqtt()
         val t = m.topics()
@@ -344,10 +368,20 @@ class McpServer(private val mqttProvider: () -> MqttBridge?, private val port: I
                     s.remove("screen_on")
                 }
                 val before = t["$B/bridge/${b.id}/config"]
-                if (s.length() > 0) m.send("$B/bridge/${b.id}/config/set", s.toString())
+                val target = before?.let { try { JSONObject(it) } catch (_: Exception) { null } }
+                val access = target?.optJSONObject("settings")?.optString("assistant_access") ?: "ha"
+                if (s.length() > 0) when {
+                    // this bridge: apply directly, whatever the MQTT setting is
+                    b.id == m.bridgeId -> m.onConfigSet?.invoke(JSONObject(s.toString()))
+                    // other bridge that only allows decentral setup: ask its own MCP endpoint
+                    access == "mcp" -> return forward(target, JSONObject().put("settings", s))
+                    else -> m.send("$B/bridge/${b.id}/config/set", s.toString())
+                }
                 val slow = listOf("name", "restart", "reimport", "mqtt_host", "mqtt_port", "mqtt_user", "mqtt_password").any { s.has(it) }
-                val ok = s.length() == 0 || waitFor(if (slow) 25000 else 5000) { m.topics()["$B/bridge/${b.id}/config"] != before }
-                val after = m.topics()["$B/bridge/${b.id}/config"]?.let { JSONObject(it).optJSONObject("settings") }
+                // after a rename/restart the bridge has a new MQTT object: always ask the provider
+                fun cfgNow() = mqttProvider()?.topics()?.get("$B/bridge/${b.id}/config")
+                val ok = s.length() == 0 || waitFor(if (slow) 25000 else 5000) { cfgNow().let { it != null && it != before } }
+                val after = cfgNow()?.let { JSONObject(it).optJSONObject("settings") }
                 JSONObject().put("bridge", b.name).put("confirmed", ok)
                     .put("sent", JSONArray(s.keys().asSequence().toList()))
                     .put("settings", after ?: JSONObject.NULL)

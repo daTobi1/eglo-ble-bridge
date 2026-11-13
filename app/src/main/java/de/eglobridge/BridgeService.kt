@@ -52,7 +52,6 @@ class BridgeService : Service(), MeshListener {
         handler = Handler(thread.looper)
         createChannel()
         startForeground(NOTIF_ID, buildNotification("startet …"))
-        mcp.start()
     }
 
     /** MCP endpoint for assistants (port 8765); uses whatever MQTT connection the bridge has. */
@@ -89,6 +88,7 @@ class BridgeService : Service(), MeshListener {
             it.onServiceCommand = { cmd -> handler.post { onServiceCommand(cmd) } }
             it.onConfigSet = { json -> handler.post { onConfigSet(json) } }
             it.deviceInfo = { DeviceInfo.collect(this) }
+            if (cfg.mcpEnabled) mcp.start()
             it.hasMicPermission = {
                 Build.VERSION.SDK_INT < 23 ||
                     checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
@@ -123,6 +123,7 @@ class BridgeService : Service(), MeshListener {
 
     /** Tear down mesh + MQTT (keeps the service and its thread alive). */
     private fun stopBridge() {
+        mcp.stop()
         BridgeLog.listeners.remove(logListener)
         handler.removeCallbacks(updateCheck)
         handler.removeCallbacks(batteryCheck)
@@ -301,7 +302,6 @@ class BridgeService : Service(), MeshListener {
         running = false
         meshState = "gestoppt"
         BridgeLog.i("Bridge gestoppt")
-        mcp.stop()
         stopBridge()
         handler.postDelayed({ thread.quitSafely() }, 1000)
         releaseLocks()
