@@ -117,6 +117,7 @@ class ApiServer(
         s.bind(java.net.InetSocketAddress(port))
         server = s
         Thread({ acceptLoop(s) }, "esphome-api").apply { isDaemon = true; start() }
+        Thread({ keepAliveLoop(s) }, "esphome-keepalive").apply { isDaemon = true; start() }
         log("ESPHome-API lauscht auf Port $port")
     }
 
@@ -127,6 +128,27 @@ class ApiServer(
         connections.forEach { it.close() }
         connections.clear()
         voiceConn = null
+    }
+
+    /**
+     * Detects dead connections. While audio streams, Home Assistant only receives and may never ping
+     * us, so we ping it after 45 s of silence; nothing at all for 100 s means the connection is gone
+     * (e.g. Wi-Fi dropped, Home Assistant restarted) – close it so a new connection works cleanly.
+     */
+    private fun keepAliveLoop(s: ServerSocket) {
+        while (server === s) {
+            try { Thread.sleep(15_000) } catch (_: InterruptedException) { return }
+            val now = System.currentTimeMillis()
+            for (c in connections) {
+                val idle = now - c.lastRx
+                if (idle > 100_000) {
+                    log("ESPHome-API: keine Antwort seit ${idle / 1000} s – Verbindung wird geschlossen")
+                    c.close()
+                } else if (idle > 45_000 && c.authenticated) {
+                    c.send(Msg.PING_REQUEST, ProtoWriter())
+                }
+            }
+        }
     }
 
     private fun acceptLoop(s: ServerSocket) {
@@ -185,6 +207,8 @@ class ApiServer(
         @Volatile var authenticated = false
         @Volatile var statesSubscribed = false
         @Volatile private var closed = false
+        /** Time of the last frame from the client (System.currentTimeMillis()). */
+        @Volatile var lastRx = System.currentTimeMillis()
         private val peer = sock.remoteSocketAddress?.toString() ?: "?"
 
         fun run() {
@@ -193,6 +217,7 @@ class ApiServer(
                 sock.soTimeout = 0
                 while (!closed) {
                     val frame = readFrame() ?: break
+                    lastRx = System.currentTimeMillis()
                     handle(frame.first, ProtoMessage.parse(frame.second))
                 }
             } catch (e: SocketException) {

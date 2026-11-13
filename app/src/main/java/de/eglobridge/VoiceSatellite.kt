@@ -87,6 +87,14 @@ class VoiceSatellite(private val ctx: Context, private val version: String) : Ap
     /** Failed runs in a row; slows down retries if the pipeline is broken (e.g. no wake word engine). */
     private var errorCount = 0
     private var lastVolume = -1
+    /** No microphone audio to Home Assistant before this time (speaker echo dies away). */
+    @Volatile private var quietUntil = 0L
+    /** Backoff after failed runs: the watchdog does not restart listening before this time. */
+    private var retryAt = 0L
+    /** A run start is scheduled for after the quiet time. */
+    private var pendingStart = false
+    /** When the current phase (other than IDLE) began; used to free a stuck satellite. */
+    private var phaseSince = 0L
 
     // ---- audio out (voice thread)
     private var speech: MediaPlayer? = null
@@ -122,7 +130,8 @@ class VoiceSatellite(private val ctx: Context, private val version: String) : Ap
                 levelPeak = 0; levelSumSq = 0.0; levelCount = 0
             }
         }
-        if (streaming) {
+        // never send our own voice to Home Assistant (Whisper transcribed the answers)
+        if (streaming && !ttsPlaying && SystemClock.elapsedRealtime() >= quietUntil) {
             val b = ByteArray(pcm.size * 2)
             for (i in pcm.indices) {
                 val v = pcm[i].toInt()
@@ -241,6 +250,10 @@ class VoiceSatellite(private val ctx: Context, private val version: String) : Ap
             if (subscribed) {
                 BridgeLog.i("Sprach-Satellit: Home Assistant hört zu")
                 runActive = false
+                awaitingRunStart = false
+                errorCount = 0
+                retryAt = 0L
+                if (!ttsPlaying && speech == null && phase != Phase.IDLE) { phase = Phase.IDLE; updateView() }
                 ensureListening()
             } else {
                 streaming = false
@@ -313,7 +326,8 @@ class VoiceSatellite(private val ctx: Context, private val version: String) : Ap
     /** Start listening for the wake word unless something else is going on. */
     private fun ensureListening() {
         if (!canListen()) return
-        if (runActive || ttsPlaying || phase == Phase.ANNOUNCING) return
+        if (runActive || pendingStart || ttsPlaying || phase == Phase.ANNOUNCING) return
+        if (SystemClock.elapsedRealtime() < retryAt) return
         if (!openMic()) {
             h.postDelayed({ ensureListening() }, 15000)
             return
@@ -324,6 +338,16 @@ class VoiceSatellite(private val ctx: Context, private val version: String) : Ap
     }
 
     private fun startRun(flags: Int, convId: String) {
+        val wait = quietUntil - SystemClock.elapsedRealtime()
+        if (wait > 0) {
+            if (pendingStart) return
+            pendingStart = true
+            h.postDelayed({
+                pendingStart = false
+                if (canListen() && !runActive && !ttsPlaying) startRun(flags, convId)
+            }, wait)
+            return
+        }
         sendQueue.clear()
         streaming = true
         runActive = true
@@ -429,8 +453,10 @@ class VoiceSatellite(private val ctx: Context, private val version: String) : Ap
         // a broken pipeline should not hammer Home Assistant: 3 s, 6 s, 12 s … up to 2 min
         if (errorCount > 0) {
             val delay = (3000L shl (errorCount - 1).coerceAtMost(6)).coerceAtMost(120_000L)
+            retryAt = SystemClock.elapsedRealtime() + delay
             h.postDelayed({ ensureListening() }, delay)
         } else {
+            retryAt = 0L
             ensureListening()
         }
     }
@@ -457,7 +483,17 @@ class VoiceSatellite(private val ctx: Context, private val version: String) : Ap
                 BridgeLog.w("Sprach-Satellit: keine Antwort von Home Assistant – neuer Versuch")
                 stopRun()
                 ensureListening()
-            } else if (!runActive && !ttsPlaying && phase == Phase.IDLE && errorCount == 0 && canListen()) {
+            } else if (!runActive && !ttsPlaying && phase == Phase.IDLE && canListen()) {
+                ensureListening()
+            } else if (!runActive && !ttsPlaying && speech == null && phase != Phase.IDLE &&
+                SystemClock.elapsedRealtime() - phaseSince > 30_000) {
+                // e.g. playback stopped from outside during an announcement: nothing will end this phase
+                BridgeLog.w("Sprach-Satellit: hing in Phase ${phase.name} – zurück auf Zuhören")
+                phase = Phase.IDLE
+                errorCount = 0
+                retryAt = 0L
+                refreshMpState()
+                updateView()
                 ensureListening()
             }
             // volume changed on the tablet itself (buttons, MQTT): tell Home Assistant
@@ -522,6 +558,7 @@ class VoiceSatellite(private val ctx: Context, private val version: String) : Ap
             val rest = urls.drop(1)
             if (rest.isNotEmpty()) { playSpeech(rest, done); return }
             ttsPlaying = false
+            quietUntil = SystemClock.elapsedRealtime() + 700
             refreshMpState()
             done()
         }
@@ -552,6 +589,7 @@ class VoiceSatellite(private val ctx: Context, private val version: String) : Ap
         try { p.stop() } catch (_: Throwable) { }
         try { p.release() } catch (_: Throwable) { }
         ttsPlaying = false
+        quietUntil = SystemClock.elapsedRealtime() + 700
     }
 
     private fun playMusic(url: String) {
@@ -600,7 +638,9 @@ class VoiceSatellite(private val ctx: Context, private val version: String) : Ap
 
     private fun refreshMpState() {
         val s = when {
-            ttsPlaying || phase == Phase.ANNOUNCING -> Va.MP_ANNOUNCING
+            // Home Assistant's ESPHome media player has no mapping for MP_ANNOUNCING (KeyError,
+            // the satellite then hung) – report speech output as PLAYING like music
+            ttsPlaying || phase == Phase.ANNOUNCING -> Va.MP_PLAYING
             music != null && musicPaused -> Va.MP_PAUSED
             music != null -> Va.MP_PLAYING
             else -> Va.MP_IDLE
@@ -657,7 +697,10 @@ class VoiceSatellite(private val ctx: Context, private val version: String) : Ap
 
     // ------------------------------------------------------------------ kiosk overlay
 
+    private var lastPhase = Phase.IDLE
+
     private fun updateView() {
+        if (phase != lastPhase) { lastPhase = phase; phaseSince = SystemClock.elapsedRealtime() }
         val phaseName = when {
             lastError.isNotEmpty() && phase == Phase.IDLE -> "error"
             else -> phase.name.lowercase()

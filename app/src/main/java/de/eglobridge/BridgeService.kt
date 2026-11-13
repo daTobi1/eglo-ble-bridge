@@ -33,6 +33,18 @@ class BridgeService : Service(), MeshListener {
         fun stop(ctx: Context) {
             ctx.stopService(Intent(ctx, BridgeService::class.java))
         }
+
+        /**
+         * Called by the activities whenever they come to the front. Android 11 only lets a foreground
+         * service use the microphone if it was started while the app was visible; after a reboot the
+         * service starts in the background and Android hands it silence. Starting it again from a
+         * visible activity upgrades its microphone access, then the microphone is reopened.
+         */
+        fun refreshFromForeground(ctx: Context) {
+            if (!running) return
+            start(ctx)
+            MicHub.reopenLater()
+        }
     }
 
     private lateinit var thread: HandlerThread
@@ -58,7 +70,11 @@ class BridgeService : Service(), MeshListener {
     /** MCP endpoint for assistants (port 8765); uses whatever MQTT connection the bridge has. */
     private val mcp = McpServer({ hub })
 
+    private var notifText = "startet …"
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // every start request must be answered with startForeground (also when already running)
+        startForeground(NOTIF_ID, buildNotification(notifText))
         if (mesh == null) startBridge()
         return START_STICKY
     }
@@ -398,6 +414,7 @@ class BridgeService : Service(), MeshListener {
     }
 
     private fun updateNotification(text: String) {
+        notifText = text
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.notify(NOTIF_ID, buildNotification(text))
     }
