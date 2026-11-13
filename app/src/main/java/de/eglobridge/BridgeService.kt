@@ -98,6 +98,7 @@ class BridgeService : Service(), MeshListener {
             it.start(cfg)
         }
         BridgeLog.listeners.add(logListener)
+        MicHub.source = cfg.micSource
         if (cfg.voiceEnabled) voice = VoiceSatellite(this, version).also { it.start() }
         m.start(cfg)
         handler.removeCallbacks(updateCheck)
@@ -195,6 +196,12 @@ class BridgeService : Service(), MeshListener {
                 cfg.voiceEnabled = on
                 changed += if (on) "Sprach-Satellit an" else "Sprach-Satellit aus"
                 restart = true
+            }
+        }
+        if (o.has("mic_source")) {
+            val src = o.optString("mic_source").trim().lowercase()
+            if (src != cfg.micSource) {
+                cfg.micSource = src; changed += "Mikrofon-Quelle ${cfg.micSource}"; restart = true
             }
         }
         if (o.has("voice_noise_suppression")) {

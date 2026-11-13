@@ -42,11 +42,25 @@ object MicHub {
     val isOpen get() = record != null
 
     @SuppressLint("MissingPermission")
+    /**
+     * Android audio source: "voice_recognition" (default, no automatic gain – clean for speech
+     * recognition), "mic" (with the device's automatic gain, clips on some tablets) or "unprocessed".
+     * Takes effect the next time the microphone is opened.
+     */
+    @Volatile var source: String = "voice_recognition"
+
+    private fun sourceId(): Int = when (source) {
+        "mic" -> MediaRecorder.AudioSource.MIC
+        "unprocessed" -> if (android.os.Build.VERSION.SDK_INT >= 24) MediaRecorder.AudioSource.UNPROCESSED
+            else MediaRecorder.AudioSource.VOICE_RECOGNITION
+        else -> MediaRecorder.AudioSource.VOICE_RECOGNITION
+    }
+
     private fun open(): Boolean {
         val minBuf = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         if (minBuf <= 0) { BridgeLog.e("Mikrofon: ungültige Puffergröße"); return false }
         val rec = try {
-            AudioRecord(MediaRecorder.AudioSource.MIC, RATE, AudioFormat.CHANNEL_IN_MONO,
+            AudioRecord(sourceId(), RATE, AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT, max(minBuf, CHUNK * 2 * 8))
         } catch (t: Throwable) {
             BridgeLog.e("Mikrofon nicht verfügbar", t); return false
@@ -59,6 +73,7 @@ object MicHub {
             BridgeLog.e("Mikrofon-Aufnahme startet nicht", t); rec.release(); return false
         }
         record = rec
+        BridgeLog.i("Mikrofon geöffnet (Quelle: $source)")
         thread = Thread({ loop(rec) }, "mic").apply { priority = Thread.MAX_PRIORITY; start() }
         return true
     }
