@@ -435,6 +435,9 @@ class KioskActivity : Activity(), KioskControl.Ui {
             } catch (_: Throwable) { }
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             overlay.visibility = View.GONE
+            // must be set before setBrightness(), which ignores calls while the screen is "off" –
+            // otherwise the window stays at the 1 % used for "screen off"
+            KioskControl.screenOn = true
             setBrightness(cfg.kioskBrightness)
             lastTouch = SystemClock.elapsedRealtime()
             restoreSystemTimeout()
