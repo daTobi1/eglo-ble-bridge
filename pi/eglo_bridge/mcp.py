@@ -63,6 +63,28 @@ TOOLS = [
 ]
 
 
+def _forward(target: dict, args: dict) -> Any:
+    """eglo_configure_bridge on another bridge's MCP endpoint (its IP from its retained config)."""
+    import urllib.request
+    ip = (target.get("device") or {}).get("ip")
+    if not ip:
+        raise ValueError("Bridge lässt nur dezentrale Einrichtung zu, ihre IP ist aber unbekannt")
+    port = (target.get("settings") or {}).get("mcp_port") or PORT
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": {"name": "eglo_configure_bridge", "arguments": args}}).encode()
+    req = urllib.request.Request(f"http://{ip}:{port}/mcp", data=body, method="POST",
+                                 headers={"content-type": "application/json"})
+    with urllib.request.urlopen(req, timeout=40) as r:
+        res = json.loads(r.read())["result"]
+    text = res["content"][0]["text"]
+    if res.get("isError"):
+        raise RuntimeError(text.removeprefix("Fehler: "))
+    try:
+        return json.loads(text)
+    except ValueError:
+        return text
+
+
 def _norm(s: str) -> str:
     s = s.lower().replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss")
     return re.sub(r"[^a-z0-9]+", " ", s).strip()
@@ -333,12 +355,29 @@ class McpServer:
                 m.send(f"{B}/bridge/{b['id']}/screen/set", "ON" if s.pop("screen_on") else "OFF")
             topic = f"{B}/bridge/{b['id']}/config"
             before = t.get(topic)
-            if s:
-                m.send(f"{topic}/set", json.dumps(s))
-            slow = any(k in s for k in ("name", "restart", "reimport", "mqtt_host", "mqtt_port", "mqtt_user", "mqtt_password"))
-            ok = not s or await self._wait_for(25 if slow else 5, lambda: m.topic_cache.get(topic) != before)
             try:
-                after = json.loads(m.topic_cache.get(topic, "{}")).get("settings")
+                target = json.loads(before) if before else {}
+            except ValueError:
+                target = {}
+            access = (target.get("settings") or {}).get("assistant_access", "ha")
+            if s:
+                if b["id"] == m.bridge_id:
+                    # this bridge: apply directly, whatever the MQTT setting is
+                    if m.on_config_set:
+                        m.on_config_set(dict(s))
+                elif access == "mcp":
+                    # other bridge that only allows decentral setup: ask its own MCP endpoint
+                    return await asyncio.get_running_loop().run_in_executor(None, _forward, target, {"settings": s})
+                else:
+                    m.send(f"{topic}/set", json.dumps(s))
+            slow = any(k in s for k in ("name", "restart", "reimport", "mqtt_host", "mqtt_port", "mqtt_user", "mqtt_password"))
+
+            def cfg_now():
+                mm = self.mqtt_provider()  # a rename restarts the bridge: new MQTT object
+                return mm.topic_cache.get(topic) if mm is not None else None
+            ok = not s or await self._wait_for(25 if slow else 5, lambda: cfg_now() not in (None, before))
+            try:
+                after = json.loads(cfg_now() or "{}").get("settings")
             except ValueError:
                 after = None
             return {"bridge": b["name"], "confirmed": ok, "sent": list(s), "settings": after}

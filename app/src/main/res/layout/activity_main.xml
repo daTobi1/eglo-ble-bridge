@@ -315,6 +315,43 @@
             android:inputType="textPassword" />
 
         <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:textStyle="bold"
+            android:text="Einrichtung durch Assistent (z. B. Claude)" />
+
+        <RadioGroup
+            android:id="@+id/assistantAccess"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content">
+
+            <RadioButton
+                android:id="@+id/accessHa"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Zentral über Home Assistant" />
+
+            <RadioButton
+                android:id="@+id/accessMcp"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Dezentral: MCP-Zugang auf dieser Bridge (Port 8765)" />
+
+            <RadioButton
+                android:id="@+id/accessBoth"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Beides" />
+        </RadioGroup>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="12sp"
+            android:text="Zentral: Einstellungen kommen über MQTT (Home Assistant, Entität „Name“ usw.). Dezentral: Assistenten verbinden sich direkt mit http://&lt;IP&gt;:8765/mcp – ohne Passwort, also nur in einem vertrauenswürdigen WLAN. Lampen schalten geht immer." />
+
+        <TextView
             style="@android:style/TextAppearance.Material.Title"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

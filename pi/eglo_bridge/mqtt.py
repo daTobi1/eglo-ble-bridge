@@ -500,11 +500,14 @@ class MqttBridge:
             "name": "Mikrofon", "unique_id": f"eglo_bridge_{bid}_mic", "state_topic": self.mic_topic,
             "availability_topic": self.avail, "icon": "mdi:microphone", "entity_category": "diagnostic",
             "device": bdev})
-        self._pub_json(f"homeassistant/text/eglo_bridge_{bid}_name/config", {
-            "name": "Name", "unique_id": f"eglo_bridge_{bid}_name", "command_topic": self.config_set,
-            "command_template": '{"name": {{ value | tojson }}}', "state_topic": self.config_topic,
-            "value_template": "{{ value_json.name }}", "availability_topic": self.avail,
-            "min": 1, "max": 40, "icon": "mdi:rename", "entity_category": "config", "device": bdev})
+        if self.cfg is not None and not self.cfg.allows_mqtt_setup:
+            self._publish(f"homeassistant/text/eglo_bridge_{bid}_name/config", "", retain=True, qos=1)
+        else:
+            self._pub_json(f"homeassistant/text/eglo_bridge_{bid}_name/config", {
+                "name": "Name", "unique_id": f"eglo_bridge_{bid}_name", "command_topic": self.config_set,
+                "command_template": '{"name": {{ value | tojson }}}', "state_topic": self.config_topic,
+                "value_template": "{{ value_json.name }}", "availability_topic": self.avail,
+                "min": 1, "max": 40, "icon": "mdi:rename", "entity_category": "config", "device": bdev})
         self._pub_json(f"homeassistant/sensor/eglo_bridge_{bid}_ip/config", {
             "name": "IP-Adresse", "unique_id": f"eglo_bridge_{bid}_ip", "state_topic": self.config_topic,
             "value_template": "{{ value_json.device.ip }}", "json_attributes_topic": self.config_topic,
@@ -880,6 +883,7 @@ class MqttBridge:
             return
         settings = {"mqtt_host": c.mqttHost, "mqtt_port": c.mqttPort, "mqtt_user": c.mqttUser,
                     "awox_user": c.awoxUser, "debug_log": log.verbose, "adapter": c.adapter,
+                    "assistant_access": c.assistantAccess, "mcp_port": 8765 if c.mcp_enabled else None,
                     "lamps": sum(1 for d in c.devices if d.is_light),
                     "assigned_lamps": "all" if c.assignedLamps is None else sorted(c.assignedLamps)}
         if self._has_screen:
@@ -898,6 +902,9 @@ class MqttBridge:
             return
         v = payload.strip()
         if topic == self.config_set:
+            if self.cfg is not None and not self.cfg.allows_mqtt_setup:
+                log.w("Einrichtung über Home Assistant/MQTT ist ausgeschaltet (nur dezentral) – ignoriert")
+                return
             try:
                 data = json.loads(v)
                 if not isinstance(data, dict):

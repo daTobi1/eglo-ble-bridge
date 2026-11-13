@@ -78,3 +78,7 @@ pytest
 ```
 
 Die Tests enthalten eine simulierte Telink-Lampe mit echtem Pairing und echter Verschlüsselung (`tests/fake_ble.py`). Damit laufen Mesh-Logik und MQTT Ende-zu-Ende gegen einen echten Broker, ohne Hardware.
+
+## Einrichtung durch Assistent
+
+`eglo-bridge setup` fragt, wie ein Assistent (z. B. Claude) die Bridge einrichten darf: `ha` (zentral über Home Assistant, Standard), `mcp` (dezentral: MCP-Zugang auf Port 8765) oder `both`. Siehe [`../mcp/README.md`](../mcp/README.md).

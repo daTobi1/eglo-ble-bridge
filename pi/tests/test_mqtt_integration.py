@@ -254,6 +254,12 @@ def test_bridge_end_to_end(broker, tmp_path, monkeypatch):
                 assert st["name"] == "Pi Wohnzimmer" and "mqtt_password" not in st["settings"]
                 res = await call("eglo_configure_bridge", {"settings": {"debug_log": True}})
                 assert res["confirmed"] and res["settings"]["debug_log"] is True
+                # decentral only: setup via MQTT is ignored, via the MCP endpoint it still works
+                bridge.mqtt.cfg.assistantAccess = "mcp"
+                ha.pub("eglo_bridge/bridge/pi_kueche/config/set", json.dumps({"debug_log": False}))
+                await _wait(lambda: "nur dezentral" in " ".join(entry.log.snapshot()[-10:]))
+                res = await call("eglo_configure_bridge", {"settings": {"debug_log": False}})
+                assert res["confirmed"] and res["settings"]["debug_log"] is False
             finally:
                 await mcp.stop()
         finally:

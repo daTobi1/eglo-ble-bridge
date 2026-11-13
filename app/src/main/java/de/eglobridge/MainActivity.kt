@@ -53,6 +53,7 @@ class MainActivity : Activity() {
     private lateinit var kioskUrl: EditText
     private lateinit var kioskPin: EditText
     private lateinit var kioskEnabled: CheckBox
+    private lateinit var assistantAccess: android.widget.RadioGroup
     private lateinit var fireSpeed: SeekBar
     private lateinit var fireStrength: SeekBar
     private lateinit var fireBrightness: SeekBar
@@ -191,6 +192,12 @@ class MainActivity : Activity() {
         kioskUrl.setText(cfg.kioskUrl)
         kioskPin.setText(cfg.kioskPin)
         kioskEnabled.isChecked = cfg.kioskEnabled
+        assistantAccess = findViewById(R.id.assistantAccess)
+        assistantAccess.check(when (cfg.assistantAccess) {
+            "mcp" -> R.id.accessMcp
+            "both" -> R.id.accessBoth
+            else -> R.id.accessHa
+        })
         findViewById<Button>(R.id.btnKiosk).setOnClickListener {
             kioskEnabled.isChecked = true
             saveFields()
@@ -482,6 +489,11 @@ class MainActivity : Activity() {
         kioskUrl.text.toString().trim().takeIf { it.isNotEmpty() }?.let { cfg.kioskUrl = it }
         kioskPin.text.toString().trim().takeIf { it.isNotEmpty() }?.let { cfg.kioskPin = it }
         cfg.kioskEnabled = kioskEnabled.isChecked
+        cfg.assistantAccess = when (assistantAccess.checkedRadioButtonId) {
+            R.id.accessMcp -> "mcp"
+            R.id.accessBoth -> "both"
+            else -> "ha"
+        }
     }
 
     private fun importFromCloud() {

@@ -257,7 +257,8 @@ async def _run(config_path: Path) -> int:
         return 2
     from .mcp import McpServer
     mcp = McpServer(lambda: bridge.mqtt, __version__)
-    await mcp.start()
+    if Config.load(config_path).mcp_enabled:
+        await mcp.start()
     await bridge.stopped.wait()
     log.i("Bridge wird beendet")
     await mcp.stop()
@@ -287,6 +288,12 @@ def _setup(path: Path) -> int:
     cfg.mqttPassword = _ask("MQTT-Passwort", cfg.mqttPassword, secret=True)
     cfg.awoxUser = _ask("AwoX/EGLO-Connect-Konto (E-Mail)", cfg.awoxUser)
     cfg.awoxPassword = _ask("AwoX/EGLO-Connect-Passwort", cfg.awoxPassword, secret=True)
+    while True:
+        a = _ask("Einrichtung durch Assistent: ha = zentral über Home Assistant, mcp = dezentral "
+                 "(MCP-Zugang auf Port 8765, ohne Passwort), both = beides", cfg.assistantAccess)
+        if a in ("ha", "mcp", "both"):
+            cfg.assistantAccess = a
+            break
     cfg.save()
     print("\nImportiere Lampen aus der AwoX-Cloud …")
     try:

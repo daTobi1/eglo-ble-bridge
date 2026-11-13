@@ -79,6 +79,17 @@ class Config(context: Context) {
         set(v) = p.edit().putString("bridgeName", v.trim()).apply()
 
     /**
+     * How an assistant (e.g. Claude) may set up this bridge: "ha" = centrally through Home Assistant
+     * (settings via MQTT `config/set`), "mcp" = decentrally through this bridge's own MCP endpoint
+     * (port [McpServer.PORT]), "both".
+     */
+    var assistantAccess: String
+        get() = p.getString("assistantAccess", "ha") ?: "ha"
+        set(v) = p.edit().putString("assistantAccess", if (v in listOf("ha", "mcp", "both")) v else "ha").apply()
+    val allowsMqttSetup get() = assistantAccess != "mcp"
+    val mcpEnabled get() = assistantAccess != "ha"
+
+    /**
      * MQTT id of this bridge. Fixed on first use (from the name at that time), so renaming the
      * bridge later only changes its display name and Home Assistant keeps the same device/entities.
      */
