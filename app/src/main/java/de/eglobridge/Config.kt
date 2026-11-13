@@ -164,6 +164,11 @@ class Config(context: Context) {
     var voiceAutoGain: Int
         get() = p.getInt("voiceGain", 0)
         set(v) = p.edit().putInt("voiceGain", v.coerceIn(0, 31)).apply()
+    /** Android microphone source, see [MicHub.source]. */
+    var micSource: String
+        get() = p.getString("micSource", "voice_recognition") ?: "voice_recognition"
+        set(v) = p.edit().putString("micSource",
+            if (v in listOf("voice_recognition", "mic", "unprocessed")) v else "voice_recognition").apply()
     /** Fixed microphone gain applied by Home Assistant. */
     var voiceVolumeMultiplier: Float
         get() = p.getFloat("voiceVolume", 1f)

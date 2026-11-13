@@ -207,6 +207,7 @@ class MqttBridge(
                 .put("kiosk_brightness", c.kioskBrightness)
                 .put("assistant_access", c.assistantAccess)
                 .put("voice_enabled", c.voiceEnabled)
+                .put("mic_source", c.micSource)
                 .put("voice_noise_suppression", c.voiceNoiseSuppression)
                 .put("voice_auto_gain", c.voiceAutoGain)
                 .put("voice_volume_multiplier", c.voiceVolumeMultiplier.toDouble())
