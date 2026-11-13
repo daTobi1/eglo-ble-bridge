@@ -255,8 +255,12 @@ async def _run(config_path: Path) -> int:
             pass
     if not bridge.start():
         return 2
+    from .mcp import McpServer
+    mcp = McpServer(lambda: bridge.mqtt, __version__)
+    await mcp.start()
     await bridge.stopped.wait()
     log.i("Bridge wird beendet")
+    await mcp.stop()
     await bridge.stop()
     return bridge.exit_code
 

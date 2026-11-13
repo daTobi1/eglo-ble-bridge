@@ -215,6 +215,47 @@ def test_bridge_end_to_end(broker, tmp_path, monkeypatch):
             assert saved.bridgeName == "Pi Wohnzimmer" and saved.bridgeId == "pi_kueche"
             await _wait(lambda: json.loads(ha.msgs["eglo_bridge/bridge/pi_kueche/config"])["name"] == "Pi Wohnzimmer")
             assert not any(t.startswith("eglo_bridge/bridge/pi_wohnzimmer") for t in ha.msgs)
+
+            # MCP endpoint: lamps and bridges through the bridge's own MQTT login
+            from eglo_bridge.mcp import McpServer
+            mport = _free_port()
+            mcp = McpServer(lambda: bridge.mqtt, "test", port=mport)
+            await mcp.start()
+
+            def rpc(method, params=None, rid=1):
+                import urllib.request
+                req = urllib.request.Request(f"http://127.0.0.1:{mport}/mcp", method="POST",
+                                             data=json.dumps({"jsonrpc": "2.0", "id": rid, "method": method,
+                                                              "params": params or {}}).encode(),
+                                             headers={"content-type": "application/json"})
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    return json.loads(r.read())["result"]
+
+            async def call(name, args):
+                res = await asyncio.get_running_loop().run_in_executor(
+                    None, rpc, "tools/call", {"name": name, "arguments": args})
+                assert not res.get("isError"), res
+                return json.loads(res["content"][0]["text"])
+            try:
+                init = await asyncio.get_running_loop().run_in_executor(None, rpc, "initialize", {})
+                assert init["serverInfo"]["name"] == "eglo-bridge"
+                tl = await asyncio.get_running_loop().run_in_executor(None, rpc, "tools/list")
+                assert {"eglo_overview", "eglo_set_light", "eglo_configure_bridge"} <= {x["name"] for x in tl["tools"]}
+                await _wait(lambda: bridge.mqtt is not None and bridge.mqtt.connected, timeout=15)
+                await asyncio.sleep(1.0)
+                ov = await call("eglo_overview", {})
+                assert ov["this_bridge"] == "Pi Wohnzimmer"
+                assert ov["lamps"][0]["name"] == "EGLOPanel Küche"
+                n = len(lamp.received)
+                res = await call("eglo_set_light", {"lamps": ["kueche"], "on": True, "brightness_pct": 50})
+                assert res["sent"]["state"] == "ON"
+                await _wait(lambda: len(lamp.received) > n)
+                st = await call("eglo_bridge_settings", {})
+                assert st["name"] == "Pi Wohnzimmer" and "mqtt_password" not in st["settings"]
+                res = await call("eglo_configure_bridge", {"settings": {"debug_log": True}})
+                assert res["confirmed"] and res["settings"]["debug_log"] is True
+            finally:
+                await mcp.stop()
         finally:
             await bridge.stop()
             await _wait(lambda: ha.msgs.get("eglo_bridge/bridge/pi_kueche/status") == "offline")

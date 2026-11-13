@@ -27,7 +27,7 @@ class MqttBridge(
     private val handler: Handler,
     private val mesh: MeshManager,
     private val lights: LightController,
-    private val version: String,
+    val version: String,
     val bridgeId: String,
     val bridgeName: String
 ) {
@@ -149,6 +149,14 @@ class MqttBridge(
 
     val connected: Boolean get() = client?.isConnected == true
 
+    /** Last payload of every topic this bridge receives (for the MCP endpoint, see McpServer). */
+    private val topicCache = ConcurrentHashMap<String, String>()
+    fun topics(): Map<String, String> = HashMap(topicCache)
+    /** Lamps known to this bridge (same AwoX account on every bridge). */
+    fun knownDevices(): List<MeshDevice> = devices
+    /** Publish on behalf of the MCP endpoint (same broker login as the bridge). */
+    fun send(topic: String, payload: String, retain: Boolean = false) = publish(topic, payload, retain, 1)
+
     // ================================================================= lifecycle
 
     fun start(cfg: Config) {
@@ -244,6 +252,7 @@ class MqttBridge(
                 override fun messageArrived(topic: String, message: MqttMessage) {
                     val payload = String(message.payload)
                     if (topic == MUSIC_FRAME) { onFrame(payload); return }   // hot path, no hop
+                    if (payload.isEmpty()) topicCache.remove(topic) else topicCache[topic] = payload
                     handler.post { onMessage(topic, payload) }
                 }
                 override fun deliveryComplete(token: IMqttDeliveryToken?) {}
@@ -299,8 +308,9 @@ class MqttBridge(
                 "$screenTopic/set", "$brightTopic/set", "$timeoutTopic/set", "$urlTopic/set",
                 "$BASE/light/#", "$BASE/music/#", SENS, SENS_SET, SPEED, SPEED_SET,
                 "$FIRE_SPEED/#", "$FIRE_STRENGTH/#", "$FIRE_BRIGHT/#",
-                "$lampAssign/+/set", "$allAssign/set", configSet
-            ), IntArray(21))
+                "$lampAssign/+/set", "$allAssign/set", configSet,
+                "$BASE/bridge/+/state", "$BASE/bridge/+/config"
+            ), IntArray(23))
         } catch (t: Throwable) {
             BridgeLog.e("MQTT-Subscribe fehlgeschlagen", t)
         }
