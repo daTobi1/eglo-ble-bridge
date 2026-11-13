@@ -107,6 +107,8 @@ class KioskActivity : Activity(), KioskControl.Ui {
             leftMargin = dp(10); bottomMargin = dp(10)
         })
 
+        buildVoiceViews(root)
+
         root.addView(overlay, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
         setContentView(root)
@@ -172,6 +174,8 @@ class KioskActivity : Activity(), KioskControl.Ui {
         KioskControl.visible = true
         setBrightness(cfg.kioskBrightness)
         Updater.latest?.let { if (it.versionCode > Updater.currentVersionCode(this)) showUpdate(it) }
+        if (KioskControl.wakeRequested) { KioskControl.wakeRequested = false; setScreen(true) }
+        showVoice(KioskControl.voice)
     }
 
     override fun onPause() {
@@ -289,6 +293,117 @@ class KioskActivity : Activity(), KioskControl.Ui {
             startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         }
     }
+
+    // ------------------------------------------------------------------ voice assistant overlay
+
+    private lateinit var voiceCard: android.widget.LinearLayout
+    private lateinit var voiceTitle: TextView
+    private lateinit var voiceHeard: TextView
+    private lateinit var voiceAnswer: TextView
+    private lateinit var timerBox: android.widget.LinearLayout
+    private var voiceView: VoiceView? = null
+
+    private fun pill(color: String) = android.graphics.drawable.GradientDrawable().apply {
+        cornerRadius = dp(18).toFloat()
+        setColor(Color.parseColor(color))
+    }
+
+    private fun buildVoiceViews(root: FrameLayout) {
+        voiceCard = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            background = pill("#E6111318")
+            setPadding(dp(22), dp(14), dp(22), dp(16))
+            visibility = View.GONE
+            elevation = dp(8).toFloat()
+            setOnClickListener { VoiceSatellite.current?.stopAlarm() }
+        }
+        voiceTitle = TextView(this).apply { setTextColor(Color.parseColor("#8AB4F8")); textSize = 16f }
+        voiceHeard = TextView(this).apply {
+            setTextColor(Color.parseColor("#BBBBBB")); textSize = 17f
+            setTypeface(typeface, android.graphics.Typeface.ITALIC)
+        }
+        voiceAnswer = TextView(this).apply { setTextColor(Color.WHITE); textSize = 21f; maxLines = 8 }
+        voiceCard.addView(voiceTitle)
+        voiceCard.addView(voiceHeard)
+        voiceCard.addView(voiceAnswer)
+        root.addView(voiceCard, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+        ).apply { bottomMargin = dp(28); leftMargin = dp(70); rightMargin = dp(70) })
+
+        timerBox = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            gravity = Gravity.END
+            visibility = View.GONE
+        }
+        root.addView(timerBox, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END
+        ).apply { topMargin = dp(16); rightMargin = dp(16) })
+    }
+
+    override fun showVoice(v: VoiceView?) {
+        if (!::voiceCard.isInitialized) return
+        voiceView = v
+        if (v == null) {
+            voiceCard.visibility = View.GONE
+            timerBox.visibility = View.GONE
+            ui.removeCallbacks(timerTick)
+            return
+        }
+        val title = when (v.phase) {
+            "listening" -> "🎙  Ich höre zu …"
+            "thinking" -> "…  Einen Moment"
+            "responding" -> "🔊"
+            "announcing" -> "📢  Durchsage"
+            "error" -> "⚠  Das hat nicht geklappt"
+            else -> ""
+        }
+        val show = v.phase != "idle" || v.answer.isNotEmpty() || v.heard.isNotEmpty()
+        voiceTitle.text = title
+        voiceTitle.visibility = if (title.isEmpty()) View.GONE else View.VISIBLE
+        voiceHeard.text = if (v.heard.isNotEmpty()) "„${v.heard}“" else ""
+        voiceHeard.visibility = if (v.heard.isEmpty()) View.GONE else View.VISIBLE
+        voiceAnswer.text = v.answer
+        voiceAnswer.visibility = if (v.answer.isEmpty()) View.GONE else View.VISIBLE
+        voiceCard.visibility = if (show) View.VISIBLE else View.GONE
+        renderTimers()
+    }
+
+    private fun fmt(sec: Int): String {
+        val s = sec.coerceAtLeast(0)
+        return if (s >= 3600) "%d:%02d:%02d".format(s / 3600, (s / 60) % 60, s % 60) else "%d:%02d".format(s / 60, s % 60)
+    }
+
+    private fun renderTimers() {
+        val v = voiceView
+        timerBox.removeAllViews()
+        ui.removeCallbacks(timerTick)
+        if (v == null || v.timers.isEmpty()) { timerBox.visibility = View.GONE; return }
+        val now = SystemClock.elapsedRealtime()
+        for (t in v.timers) {
+            val left = if (t.active) ((t.endsAt - now + 999) / 1000).toInt() else t.secondsLeft
+            val name = t.name.ifEmpty { "Timer" }
+            val tv = TextView(this).apply {
+                textSize = 20f
+                setTextColor(Color.WHITE)
+                setPadding(dp(16), dp(8), dp(16), dp(8))
+                text = when {
+                    t.finished -> "⏰  $name – abgelaufen (tippen)"
+                    !t.active -> "⏸  $name  ${fmt(left)}"
+                    else -> "⏱  $name  ${fmt(left)}"
+                }
+                background = pill(if (t.finished) "#E6C62828" else "#E6111318")
+                setOnClickListener { VoiceSatellite.current?.stopAlarm() }
+            }
+            timerBox.addView(tv, android.widget.LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(8) })
+        }
+        timerBox.visibility = View.VISIBLE
+        if (v.timers.any { it.active }) ui.postDelayed(timerTick, 1000)
+    }
+
+    private val timerTick = Runnable { renderTimers() }
 
     // ------------------------------------------------------------------ KioskControl.Ui (main thread)
 

@@ -53,6 +53,7 @@ class MainActivity : Activity() {
     private lateinit var kioskUrl: EditText
     private lateinit var kioskPin: EditText
     private lateinit var kioskEnabled: CheckBox
+    private lateinit var voiceEnabled: CheckBox
     private lateinit var assistantAccess: android.widget.RadioGroup
     private lateinit var fireSpeed: SeekBar
     private lateinit var fireStrength: SeekBar
@@ -192,6 +193,18 @@ class MainActivity : Activity() {
         kioskUrl.setText(cfg.kioskUrl)
         kioskPin.setText(cfg.kioskPin)
         kioskEnabled.isChecked = cfg.kioskEnabled
+        voiceEnabled = findViewById(R.id.voiceEnabled)
+        voiceEnabled.isChecked = cfg.voiceEnabled
+        voiceEnabled.setOnCheckedChangeListener { _, checked ->
+            if (checked == cfg.voiceEnabled) return@setOnCheckedChangeListener
+            cfg.voiceEnabled = checked
+            if (checked && Build.VERSION.SDK_INT >= 23 &&
+                checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED
+            ) requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 2)
+            // the bridge picks the change up on its next start
+            BridgeLog.i(if (checked) "Sprach-Satellit eingeschaltet" else "Sprach-Satellit ausgeschaltet")
+            if (BridgeService.running) { BridgeService.stop(this); ui.postDelayed({ BridgeService.start(this) }, 1500) }
+        }
         assistantAccess = findViewById(R.id.assistantAccess)
         assistantAccess.check(when (cfg.assistantAccess) {
             "mcp" -> R.id.accessMcp

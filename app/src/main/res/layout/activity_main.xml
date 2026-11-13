@@ -378,6 +378,12 @@
             android:layout_height="wrap_content"
             android:text="Kiosk-Modus beim Start" />
 
+        <CheckBox
+            android:id="@+id/voiceEnabled"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Sprach-Satellit für Home Assistant (ESPHome, Port 6053)" />
+
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

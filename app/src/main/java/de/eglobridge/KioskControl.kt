@@ -12,7 +12,14 @@ object KioskControl {
         fun showUpdate(info: Updater.Info)
         /** Leave kiosk mode (kiosk switched off remotely). */
         fun exit()
+        /** Voice assistant overlay (null = hide). */
+        fun showVoice(v: VoiceView?)
     }
+
+    /** Latest voice assistant state, shown again when the kiosk comes back. */
+    @Volatile var voice: VoiceView? = null
+    /** The voice assistant wants the screen on (wake word, announcement, timer) while no kiosk was visible. */
+    @Volatile var wakeRequested = false
 
     /** The visible kiosk activity, if any. Calls must be made on the main thread. */
     @Volatile var ui: Ui? = null

@@ -40,6 +40,7 @@ class BridgeService : Service(), MeshListener {
     private var mesh: MeshManager? = null
     private var mqtt: MqttBridge? = null
     private var lights: LightController? = null
+    private var voice: VoiceSatellite? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private val logListener: (String) -> Unit = { line -> handler.post { mqtt?.onLog(line) } }
@@ -97,6 +98,7 @@ class BridgeService : Service(), MeshListener {
             it.start(cfg)
         }
         BridgeLog.listeners.add(logListener)
+        if (cfg.voiceEnabled) voice = VoiceSatellite(this, version).also { it.start() }
         m.start(cfg)
         handler.removeCallbacks(updateCheck)
         handler.postDelayed(updateCheck, 30 * 1000L)
@@ -123,6 +125,8 @@ class BridgeService : Service(), MeshListener {
 
     /** Tear down mesh + MQTT (keeps the service and its thread alive). */
     private fun stopBridge() {
+        voice?.stop()
+        voice = null
         mcp.stop()
         BridgeLog.listeners.remove(logListener)
         handler.removeCallbacks(updateCheck)
@@ -183,6 +187,14 @@ class BridgeService : Service(), MeshListener {
                     cfg.kioskEnabled = false
                     main.post { KioskControl.ui?.exit() }
                 }
+            }
+        }
+        if (o.has("voice_enabled")) {
+            val on = o.optBoolean("voice_enabled")
+            if (on != cfg.voiceEnabled) {
+                cfg.voiceEnabled = on
+                changed += if (on) "Sprach-Satellit an" else "Sprach-Satellit aus"
+                restart = true
             }
         }
         if (o.has("media_volume")) {

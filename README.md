@@ -23,6 +23,16 @@ Die Lampen erscheinen in Home Assistant unter *Einstellungen → Geräte & Diens
 
 Der Name des Tablets lässt sich später in Home Assistant (Entität „Name“) oder per MQTT `eglo_bridge/bridge/<id>/config/set` ändern – Gerät und Entitäten in HA bleiben dabei erhalten. Über `config/set` lassen sich außerdem Kiosk, Dashboard-Adresse, PIN, Helligkeit, Medienlautstärke, MQTT- und AwoX-Zugang ändern; `eglo_bridge/bridge/<id>/config` zeigt die aktuellen Einstellungen und Geräteinfos.
 
+## Sprach-Satellit (Home Assistant Assist)
+
+Die Tablet-App kann sich Home Assistant gegenüber als **ESPHome-Sprachsatellit** ausgeben (wie ein Home Assistant Voice PE). Einschalten in der App: „Sprach-Satellit für Home Assistant“ (oder per MQTT `config/set` mit `{"voice_enabled": true}`).
+
+- Home Assistant findet das Tablet über mDNS unter *Einstellungen → Geräte & Dienste* als ESPHome-Gerät; sonst manuell mit der IP des Tablets und Port **6053** hinzufügen (ohne Verschlüsselungsschlüssel).
+- Es entstehen ein Assist-Satellit (mit Auswahl der Pipeline), ein Media Player und der Schalter „Mikrofon stumm“.
+- Stufe 1: Das Wake-Word erkennt Home Assistant (z. B. openWakeWord in der Pipeline). Das Tablet schickt dazu das Mikrofon-Audio dauerhaft an Home Assistant.
+- Antworten, Durchsagen (`assist_satellite.announce`), Rückfragen (`assist_satellite.start_conversation`) und Sprach-Timer werden auf dem Tablet abgespielt bzw. im Kiosk angezeigt. Ein abgelaufener Timer klingelt, bis man auf die Anzeige tippt.
+- Musikmodus und Sprach-Satellit teilen sich das Mikrofon und laufen gleichzeitig.
+
 ## Zuständigkeit mehrerer Bridges
 
 Jede Bridge (Tablet, Pi) kann auf bestimmte Lampen beschränkt werden: Sie verbindet sich dann nur
