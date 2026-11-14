@@ -65,7 +65,7 @@ class Config(context: Context) {
         get() = p.getInt("mqttPort", 1883)
         set(v) = p.edit().putInt("mqttPort", v).apply()
     var mqttUser: String
-        get() = p.getString("mqttUser", "")!!
+        get() = p.getString("mqttUser", "mqtt-eglo")!!
         set(v) = p.edit().putString("mqttUser", v).apply()
     var mqttPassword: String
         get() = p.getString("mqttPassword", "")!!
