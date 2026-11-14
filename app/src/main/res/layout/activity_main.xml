@@ -468,7 +468,7 @@
             android:id="@+id/btnWriteSettings"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Systemeinstellungen ändern (Bildschirm wirklich aus)" />
+            android:text="Systemeinstellungen ändern (Display-Zeit nach älteren Versionen zurücksetzen)" />
 
         <LinearLayout
             android:layout_width="match_parent"

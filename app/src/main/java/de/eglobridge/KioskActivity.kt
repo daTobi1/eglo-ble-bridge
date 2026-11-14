@@ -442,30 +442,21 @@ class KioskActivity : Activity(), KioskControl.Ui {
             lastTouch = SystemClock.elapsedRealtime()
             restoreSystemTimeout()
         } else {
+            // "Screen off" = black overlay + backlight off, but the display itself stays on:
+            // once Android switches the display off, touches no longer reach the app and only the
+            // power button wakes the tablet. Like this any touch wakes the dashboard.
             overlay.visibility = View.VISIBLE
             val lp = window.attributes
-            lp.screenBrightness = 0.01f
+            lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_OFF
             window.attributes = lp
-            // really switch the display off: with "modify system settings" we shorten Android's
-            // display timeout for a moment, otherwise Android uses its own timeout
-            setShortSystemTimeout()
-            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            // undo the short display timeout older versions set here
+            restoreSystemTimeout()
         }
         KioskControl.screenOn = on
     }
 
     private fun canWriteSettings() = Build.VERSION.SDK_INT < 23 || Settings.System.canWrite(this)
-
-    private fun setShortSystemTimeout() {
-        if (!canWriteSettings()) return
-        try {
-            val current = Settings.System.getInt(contentResolver, Settings.System.SCREEN_OFF_TIMEOUT, 60000)
-            if (current > 5000) cfg.savedScreenTimeout = current
-            Settings.System.putInt(contentResolver, Settings.System.SCREEN_OFF_TIMEOUT, 5000)
-        } catch (t: Throwable) {
-            BridgeLog.w("Display-Timeout konnte nicht gesetzt werden: ${t.message}")
-        }
-    }
 
     private fun restoreSystemTimeout() {
         if (!canWriteSettings()) return
