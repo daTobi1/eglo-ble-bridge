@@ -421,6 +421,9 @@ class MqttBridge(
                         .put("unique_id", "eglo_bridge_${id}_fav$n")
                         .put("command_topic", "$BASE/light/$id/fav/set")
                         .put("payload_press", "recall$n")
+                        // stored setting (state, brightness 0-255, color{r,g,b} or color_temp in K, effect)
+                        // as attributes, so dashboards can show the favourite's colour
+                        .put("json_attributes_topic", "$BASE/light/$id/fav$n")
                         .put("icon", if (n == 1) "mdi:numeric-1-circle" else "mdi:numeric-2-circle")
                         .put("device", JSONObject().put("identifiers", JSONArray().put("eglo_bridge_dev_$id")))
                         .toString(), retain = true, qos = 1)
