@@ -144,6 +144,7 @@ class MainActivity : Activity() {
         }
 
         findViewById<Button>(R.id.btnCheckUpdate).setOnClickListener { checkUpdate(manual = true) }
+        findViewById<Button>(R.id.btnConnTest).setOnClickListener { testConnection(it as Button) }
         buildLampPanels()
         btnMusic.setOnClickListener { toggleMusic() }
         val sens = findViewById<SeekBar>(R.id.musicSensitivity)
@@ -489,6 +490,32 @@ class MainActivity : Activity() {
             "Mesh: ${cfg.meshName}\n" + d.joinToString("\n") {
                 "• ${it.name}  [ID ${it.meshId}]  ${it.mac}\n   ${it.model} – ${it.type}"
             }
+    }
+
+    /** "Verbindung testen": network, MQTT broker + login, Home Assistant, update server, bridge service. */
+    private fun testConnection(button: Button) {
+        val host = mqttHost.text.toString().trim()
+        val port = mqttPort.text.toString().toIntOrNull() ?: 1883
+        val user = mqttUser.text.toString().trim()
+        val pw = mqttPassword.text.toString()
+        val url = kioskUrl.text.toString().trim().ifEmpty { cfg.kioskUrl }
+        button.isEnabled = false
+        button.text = "Teste Verbindung …"
+        Thread {
+            val steps = ConnectionTest.run(host, port, user, pw, url)
+            ui.post {
+                if (isFinishing) return@post
+                button.isEnabled = true
+                button.text = "Verbindung testen"
+                val text = steps.joinToString("\n\n") { (if (it.ok) "✅ " else "❌ ") + it.title + "\n" + it.detail }
+                BridgeLog.i("Verbindungstest: " + steps.joinToString("; ") { (if (it.ok) "OK " else "FEHLER ") + it.title })
+                AlertDialog.Builder(this)
+                    .setTitle(if (steps.all { it.ok }) "Alles in Ordnung" else "Verbindungstest")
+                    .setMessage(text)
+                    .setPositiveButton("OK", null)
+                    .show()
+            }
+        }.start()
     }
 
     private fun saveFields() {
