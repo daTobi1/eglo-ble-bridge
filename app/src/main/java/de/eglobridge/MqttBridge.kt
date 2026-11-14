@@ -120,6 +120,7 @@ class MqttBridge(
     private val batteryTopic = "$bTopic/battery"
     private val chargingTopic = "$bTopic/charging"
     private val kioskTopic = "$bTopic/kiosk"
+    private val kioskModeTopic = "$bTopic/kiosk_mode"
     private var config: Config? = null
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
@@ -312,12 +313,12 @@ class MqttBridge(
         try {
             c.subscribe(arrayOf(
                 "$BASE/bridge/+/status", "$BASE/bridge/+/info", cmdTopic, debugSet, updateInstall,
-                "$screenTopic/set", "$brightTopic/set", "$timeoutTopic/set", "$urlTopic/set",
+                "$screenTopic/set", "$brightTopic/set", "$timeoutTopic/set", "$urlTopic/set", "$kioskModeTopic/set",
                 "$BASE/light/#", "$BASE/music/#", SENS, SENS_SET, SPEED, SPEED_SET,
                 "$FIRE_SPEED/#", "$FIRE_STRENGTH/#", "$FIRE_BRIGHT/#",
                 "$lampAssign/+/set", "$allAssign/set", configSet,
                 "$BASE/bridge/+/state", "$BASE/bridge/+/config"
-            ), IntArray(23))
+            ), IntArray(24))
         } catch (t: Throwable) {
             BridgeLog.e("MQTT-Subscribe fehlgeschlagen", t)
         }
@@ -643,6 +644,14 @@ class MqttBridge(
             .put("availability_topic", avail)
             .put("device_class", "battery_charging")
             .put("entity_category", "diagnostic")
+            .put("device", bridgeDevice).toString(), retain = true, qos = 1)
+        publish("homeassistant/switch/eglo_bridge_${bridgeId}_kiosk_mode/config", JSONObject()
+            .put("name", "Kiosk-Modus")
+            .put("unique_id", "eglo_bridge_${bridgeId}_kiosk_mode")
+            .put("command_topic", "$kioskModeTopic/set")
+            .put("state_topic", kioskModeTopic)
+            .put("availability_topic", avail)
+            .put("icon", "mdi:fullscreen")
             .put("device", bridgeDevice).toString(), retain = true, qos = 1)
         publish("homeassistant/binary_sensor/eglo_bridge_${bridgeId}_kiosk/config", JSONObject()
             .put("name", "Dashboard sichtbar")
@@ -1017,6 +1026,7 @@ class MqttBridge(
         publish(timeoutTopic, c.kioskScreenTimeout.toString(), retain = true)
         publish(urlTopic, c.kioskUrl, retain = true)
         publish(kioskTopic, if (KioskControl.visible) "ON" else "OFF", retain = true)
+        publish(kioskModeTopic, if (c.kioskEnabled) "ON" else "OFF", retain = true)
     }
 
     fun publishBattery(percent: Int, charging: Boolean) {
@@ -1105,6 +1115,17 @@ class MqttBridge(
                 config?.kioskUrl = v
                 mainHandler.post { KioskControl.ui?.loadUrl(v) }
                 publishKiosk()
+                return
+            }
+            "$kioskModeTopic/set" -> {
+                // leave / start kiosk mode from Home Assistant (works even when setup via HA is off,
+                // so a tablet stuck in kiosk can always be freed remotely)
+                val on = v.uppercase() == "ON"
+                BridgeLog.i("Kiosk-Modus über Home Assistant " + if (on) "eingeschaltet" else "beendet")
+                try { onConfigSet?.invoke(JSONObject().put("kiosk_enabled", on)) } catch (t: Throwable) {
+                    BridgeLog.w("Kiosk-Modus konnte nicht umgeschaltet werden: ${t.message}")
+                }
+                handler.postDelayed({ publishKiosk() }, 1500)
                 return
             }
             updateInstall -> { onServiceCommand?.invoke("install_update"); return }
