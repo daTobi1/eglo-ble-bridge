@@ -32,7 +32,7 @@
       "type": "string",
       "title": "Bridge-Adressen",
       "description": "IP-Adressen der Bridges (Tablet/Pi), durch Komma getrennt; die erste erreichbare wird benutzt",
-      "default": "192.168.178.131, 192.168.178.135",
+      "default": "192.168.178.131, 192.168.178.132",
       "required": true
     }
   },
