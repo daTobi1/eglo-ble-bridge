@@ -38,6 +38,33 @@ install_service() {
   systemctl daemon-reload
 }
 
+install_updater() {
+  # "Bridge-Update" in Home Assistant: the sandboxed bridge creates $CONF_DIR/update-request,
+  # this root path unit sees it and runs "install.sh update" from this checkout
+  cat > /etc/systemd/system/eglo-bridge-update.service <<UNIT
+[Unit]
+Description=EGLO BLE Bridge: Update aus Home Assistant
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/rm -f $CONF_DIR/update-request
+ExecStart=$SRC/install.sh update
+UNIT
+  cat > /etc/systemd/system/eglo-bridge-update.path <<UNIT
+[Unit]
+Description=EGLO BLE Bridge: auf Update-Anforderung aus Home Assistant warten
+
+[Path]
+PathExists=$CONF_DIR/update-request
+Unit=eglo-bridge-update.service
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  systemctl daemon-reload
+  systemctl enable --now eglo-bridge-update.path >/dev/null 2>&1 || true
+}
+
 install_pkg() {
   # build from a clean temporary copy: building in-tree as root leaves root-owned
   # build/ and *.egg-info in the checkout, and a stale build/lib can resurrect deleted modules
@@ -52,11 +79,15 @@ install_pkg() {
 case "${1:-install}" in
   update)
     if [[ -d "$SRC/../.git" ]]; then
-      sudo -u "$(stat -c %U "$SRC/..")" git -C "$SRC/.." pull --ff-only
+      # always follow main exactly, even if the local checkout diverged
+      owner="$(stat -c %U "$SRC/..")"
+      sudo -u "$owner" git -C "$SRC/.." fetch -q origin +refs/heads/main:refs/remotes/origin/main
+      sudo -u "$owner" git -C "$SRC/.." checkout -q -B main origin/main
     fi
     install_pkg ""
     screen_access
     install_service
+    install_updater
     systemctl restart eglo-bridge
     echo "Aktualisiert auf $("$VENV/bin/eglo-bridge" --version)."
     exit 0
@@ -109,6 +140,7 @@ fi
 
 echo "==> systemd-Dienst"
 install_service
+install_updater
 if sudo -u "$SVC_USER" "$VENV/bin/python" -c 'import sys; from eglo_bridge.config import Config; sys.exit(0 if Config.load().is_complete else 1)'; then
   systemctl enable eglo-bridge
   systemctl restart eglo-bridge

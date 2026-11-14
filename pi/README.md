@@ -9,7 +9,7 @@ Die gleiche Brücke wie die Android-App: Sie verbindet EGLO-Connect/AwoX-Bluetoo
 
 - Bildschirmsteuerung für ein Pi-Wandpanel mit Touch-Display: Die Hintergrundbeleuchtung geht nach einer einstellbaren Zeit aus, und ein Fingertipp weckt sie wieder (siehe unten).
 
-Nicht enthalten (gibt es nur auf dem Tablet): Kiosk-Browser, Akku-Sensoren, APK-Update. Als Kiosk-Browser auf dem Pi eignet sich z. B. TouchKio oder Chromium im Kiosk-Modus.
+Nicht enthalten (gibt es nur auf dem Tablet): Kiosk-Browser, Akku-Sensoren. Als Kiosk-Browser auf dem Pi eignet sich z. B. TouchKio oder Chromium im Kiosk-Modus.
 
 ## Installation
 
@@ -38,7 +38,7 @@ Anschließend startet der Dienst `eglo-bridge` und läuft künftig automatisch b
 | Lampen neu importieren | `sudo -u eglo-bridge eglo-bridge import` (oder Button in HA) |
 | Konfigurierte Lampen | `sudo -u eglo-bridge eglo-bridge devices` |
 | Empfang am Standort prüfen | `sudo systemctl stop eglo-bridge && sudo -u eglo-bridge eglo-bridge scan; sudo systemctl start eglo-bridge` |
-| Update | `sudo ./install.sh update` |
+| Update | `sudo ./install.sh update` oder in Home Assistant über die Entität „Bridge-Update“ |
 | Mikrofon-Unterstützung | `sudo ./install.sh music` |
 
 Die Konfiguration liegt in `/etc/eglo-bridge/config.json` (nur für `eglo-bridge` lesbar, weil sie Passwörter enthält). Ein zweiter Bluetooth-Adapter lässt sich dort mit `"adapter": "hci1"` auswählen.
@@ -82,3 +82,11 @@ Die Tests enthalten eine simulierte Telink-Lampe mit echtem Pairing und echter V
 ## Einrichtung durch Assistent
 
 `eglo-bridge setup` fragt, wie ein Assistent (z. B. Claude) die Bridge einrichten darf: `ha` (zentral über Home Assistant, Standard), `mcp` (dezentral: MCP-Zugang auf Port 8765) oder `both`. Siehe [`../mcp/README.md`](../mcp/README.md).
+
+## Update aus Home Assistant
+
+Die Bridge erscheint in Home Assistant mit der Update-Entität „Bridge-Update“ und dem Knopf „Nach Update suchen“ (die Bridge prüft außerdem alle 6 Stunden). „Installieren“ holt den aktuellen Stand von `main`, installiert ihn neu und startet die Bridge neu.
+
+Weil der Dienst ohne Root-Rechte in einer Sandbox läuft, legt er dafür nur die Datei `/etc/eglo-bridge/update-request` an. Die von `install.sh` eingerichteten Root-Units `eglo-bridge-update.path` und `eglo-bridge-update.service` sehen die Datei, löschen sie und führen `install.sh update` aus diesem Checkout aus. Diese Units entstehen beim ersten `sudo ./install.sh update` (oder `install`) mit dieser Version; danach geht jedes weitere Update aus Home Assistant.
+
+Ein Update wird angezeigt, sobald die Version in `pi/eglo_bridge/__init__.py` auf `main` höher ist als die installierte.

@@ -178,13 +178,19 @@ class MqttBridge:
         self.screen = None
         self.config_topic = f"{t}/config"
         self.config_set = f"{t}/config/set"
+        #: update entity in Home Assistant (same topics as the tablet app)
+        self.update_topic = f"{t}/update"
+        self.update_install = f"{t}/update/install"
+        #: newest version on GitHub (None = not checked yet / GitHub unreachable)
+        self.latest_version: str | None = None
+        self.update_in_progress = False
         #: settings changed remotely (dict from config/set)
         self.on_config_set: Callable[[dict], None] | None = None
         self.cfg: Config | None = None
         #: last payload of every received topic (for the MCP endpoint, see mcp.py)
         self.topic_cache: dict[str, str] = {}
 
-        #: commands for the service: restart, reimport
+        #: commands for the service: restart, reimport, check_update, install_update
         self.on_service_command: Callable[[str], None] | None = None
         #: the lamp assignment was changed in Home Assistant (list of mesh ids, None = all)
         self.on_assignment_changed: Callable[[list[int] | None], None] | None = None
@@ -338,7 +344,7 @@ class MqttBridge:
         self.lamp_avail.clear()
         topics = [f"{BASE}/bridge/+/status", f"{BASE}/bridge/+/info", self.cmd_topic, self.debug_set,
                   f"{self.lamp_assign}/+/set", f"{self.all_assign}/set", self.config_set,
-                  f"{BASE}/bridge/+/state", f"{BASE}/bridge/+/config",
+                  f"{BASE}/bridge/+/state", f"{BASE}/bridge/+/config", self.update_install,
                   f"{BASE}/light/#", f"{BASE}/music/#", SENS, SENS_SET, SPEED, SPEED_SET,
                   f"{FIRE_SPEED}/#", f"{FIRE_STRENGTH}/#", f"{FIRE_BRIGHT}/#"]
         if self._has_screen:
@@ -358,6 +364,7 @@ class MqttBridge:
         self._publish_assignment()
         self.publish_screen()
         self.publish_config()
+        self.publish_update()
         self.published.clear()  # force re-publish of link scores
         # give retained messages a moment to arrive, then decide ownership
         self.sched.post_delayed(2.5, lambda: (self._recompute(), self._ensure_selection_defaults()))
@@ -479,11 +486,16 @@ class MqttBridge:
             "entity_category": "config", "device": bdev})
         for cmd, name, icon in (("restart", "Bridge neu starten", "mdi:restart-alert"),
                                 ("reimport", "Lampen neu importieren", "mdi:cloud-download"),
-                                ("reconnect", "Neu verbinden", "mdi:restart")):
+                                ("reconnect", "Neu verbinden", "mdi:restart"),
+                                ("check_update", "Nach Update suchen", "mdi:update")):
             self._pub_json(f"homeassistant/button/eglo_bridge_{bid}_{cmd}/config", {
                 "name": name, "unique_id": f"eglo_bridge_{bid}_{cmd}", "command_topic": self.cmd_topic,
                 "payload_press": cmd, "availability_topic": self.avail, "icon": icon,
                 "entity_category": "config", "device": bdev})
+        self._pub_json(f"homeassistant/update/eglo_bridge_{bid}_update/config", {
+            "name": "Bridge-Update", "unique_id": f"eglo_bridge_{bid}_update", "state_topic": self.update_topic,
+            "command_topic": self.update_install, "payload_install": "install",
+            "availability_topic": self.avail, "entity_category": "config", "device": bdev})
         self._pub_json(f"homeassistant/switch/eglo_bridge_{bid}_lamps_all/config", {
             "name": "Zuständig für alle Lampen", "unique_id": f"eglo_bridge_{bid}_lamps_all",
             "command_topic": f"{self.all_assign}/set", "state_topic": self.all_assign,
@@ -876,6 +888,17 @@ class MqttBridge:
         """Publish on behalf of the MCP endpoint (same broker login as the bridge)."""
         self._publish(topic, payload, retain=retain, qos=1)
 
+    def publish_update(self) -> None:
+        """State of the Home Assistant update entity for this bridge."""
+        from .updater import RELEASE_URL
+        self._pub_json(self.update_topic, {
+            "installed_version": self.version,
+            "latest_version": self.latest_version or self.version,
+            "title": "EGLO Bridge (Raspberry Pi)",
+            "release_url": RELEASE_URL,
+            "in_progress": self.update_in_progress,
+        })
+
     def publish_config(self) -> None:
         """Retained snapshot of the settings (no passwords) and computer facts, see config/set."""
         c = self.cfg
@@ -914,6 +937,10 @@ class MqttBridge:
                 return
             if self.on_config_set:
                 self.on_config_set(data)
+            return
+        if topic == self.update_install:
+            if v == "install" and self.on_service_command:
+                self.on_service_command("install_update")
             return
         if topic == self.cmd_topic:
             if v == "reconnect":
