@@ -106,6 +106,14 @@ class MainActivity : Activity() {
         mqttPort.setText(cfg.mqttPort.toString())
         mqttUser.setText(cfg.mqttUser)
         mqttPassword.setText(cfg.mqttPassword)
+        // "Passwort anzeigen": check for typos (hidden again when the screen is left)
+        findViewById<CheckBox>(R.id.mqttShowPassword).setOnCheckedChangeListener { _, show ->
+            val pos = mqttPassword.selectionEnd
+            mqttPassword.inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                (if (show) android.text.InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+                else android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD)
+            mqttPassword.setSelection(pos.coerceIn(0, mqttPassword.text.length))
+        }
         showDevices()
 
         findViewById<Button>(R.id.btnImport).setOnClickListener { importFromCloud() }
@@ -247,6 +255,7 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
+        findViewById<CheckBox>(R.id.mqttShowPassword)?.isChecked = false
         if (autostartOnly) return
         ui.removeCallbacks(refresher)
     }
