@@ -314,6 +314,12 @@
             android:hint="MQTT-Passwort"
             android:inputType="textPassword" />
 
+        <CheckBox
+            android:id="@+id/mqttShowPassword"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Passwort anzeigen" />
+
         <Button
             android:id="@+id/btnConnTest"
             android:layout_width="wrap_content"
