@@ -29,6 +29,8 @@ class Bridge:
         #: process exit code; non-zero lets systemd (Restart=on-failure) start us again
         self.exit_code = 0
         self._log_listener = lambda line: self.sched.post_threadsafe(self._forward_log, line)
+        #: newest version on GitHub, kept across restarts of the bridge
+        self.latest_version: str | None = None
 
     def _forward_log(self, line: str) -> None:
         if self.mqtt is not None:
@@ -63,6 +65,7 @@ class Bridge:
         self.mqtt = MqttBridge(self.sched, self.mesh, self.lights, __version__, cfg.bridgeId,
                                cfg.bridgeName, has_mic)
         self.mqtt.on_service_command = self._on_service_command
+        self.mqtt.latest_version = self.latest_version
         self.mqtt.on_config_set = self._on_config_set
         self.mqtt.on_assignment_changed = self._save_assignment
         self.screen = Screen.detect(self.sched)
@@ -74,6 +77,9 @@ class Bridge:
         self.mqtt.start(cfg)
         log.listeners.append(self._log_listener)
         self.mesh.start(cfg)
+        # look for updates a minute after the start, then every 6 hours
+        self.sched.remove("update-check")
+        self.sched.post_delayed(60.0, self._update_tick, key="update-check")
         return True
 
     async def stop(self) -> None:
@@ -210,8 +216,55 @@ class Bridge:
             self.sched.spawn(self._restart())
         elif cmd == "reimport":
             self.sched.spawn(self._reimport())
+        elif cmd == "check_update":
+            self.sched.spawn(self._check_update(manual=True))
+        elif cmd == "install_update":
+            self.sched.spawn(self._install_update())
         else:
             log.w(f"Unbekannter Befehl „{cmd}“ (auf dem Pi nicht verfügbar)")
+
+    # ---------------------------------------------------------------- updates (see updater.py)
+
+    def _update_tick(self) -> None:
+        self.sched.spawn(self._check_update(manual=False))
+        self.sched.post_delayed(6 * 3600.0, self._update_tick, key="update-check")
+
+    async def _check_update(self, manual: bool) -> None:
+        from . import updater
+        try:
+            latest = await self.loop.run_in_executor(None, updater.fetch_latest)
+        except Exception as err:  # noqa: BLE001 - offline, GitHub down, ...
+            if manual:
+                log.w(f"Update-Prüfung fehlgeschlagen: {err}")
+            return
+        if not latest:
+            if manual:
+                log.w("Update-Prüfung: Version auf GitHub nicht lesbar")
+            return
+        self.latest_version = latest
+        if self.mqtt is not None:
+            self.mqtt.latest_version = latest
+            self.mqtt.publish_update()
+        if updater.is_newer(latest, __version__):
+            log.i(f"Update verfügbar: {latest} (installiert: {__version__})")
+        elif manual:
+            log.i(f"Kein Update: {__version__} ist aktuell")
+
+    async def _install_update(self) -> None:
+        from . import updater
+        if not updater.updater_installed():
+            log.e("Update aus Home Assistant ist auf diesem Pi noch nicht eingerichtet – einmal per SSH "
+                  "„sudo ./install.sh update“ im Ordner eglo-ble-bridge/pi ausführen")
+            return
+        try:
+            updater.request_update(self.config_path.parent)
+        except OSError as err:
+            log.e("Update konnte nicht angestoßen werden", err)
+            return
+        log.i("Update angestoßen – die Bridge installiert die neue Version und startet gleich neu")
+        if self.mqtt is not None:
+            self.mqtt.update_in_progress = True
+            self.mqtt.publish_update()
 
     async def _restart(self) -> None:
         log.i("Neustart der Bridge (aus Home Assistant)")
