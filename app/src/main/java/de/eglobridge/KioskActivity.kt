@@ -181,6 +181,9 @@ class KioskActivity : Activity(), KioskControl.Ui {
 
     override fun onPause() {
         super.onPause()
+        // something covers the kiosk (installer, other app, power button): never leave the
+        // black overlay + backlight off behind, or that window is invisible and cannot be used
+        if (!KioskControl.screenOn) showAgain("Kiosk verdeckt")
         if (KioskControl.ui === this) KioskControl.ui = null
         KioskControl.visible = false
     }
@@ -194,6 +197,18 @@ class KioskActivity : Activity(), KioskControl.Ui {
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) hideSystemUi()
+        // a dialog on top ("App reagiert nicht", permission, Bluetooth, …) takes the touches,
+        // so a touch could no longer wake the screen: show everything again right away
+        else if (!KioskControl.screenOn) showAgain("Dialog über dem Kiosk")
+    }
+
+    /** Undo "screen off" (overlay + backlight off) without waking the display via wake lock. */
+    private fun showAgain(reason: String) {
+        BridgeLog.i("Bildschirm wieder an: $reason")
+        overlay.visibility = View.GONE
+        KioskControl.screenOn = true
+        setBrightness(cfg.kioskBrightness)
+        lastTouch = SystemClock.elapsedRealtime()
     }
 
     @Suppress("DEPRECATION")

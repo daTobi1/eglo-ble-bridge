@@ -12,7 +12,9 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 
 class BridgeService : Service(), MeshListener {
 
@@ -66,6 +68,27 @@ class BridgeService : Service(), MeshListener {
         handler = Handler(thread.looper)
         createChannel()
         startForeground(NOTIF_ID, buildNotification("startet …"))
+        handler.postDelayed(mainWatchdog, 15000)
+    }
+
+    // A blocked main thread (e.g. hanging WebView) means touches are not handled and the screen
+    // cannot be woken by touch – log it so such hangs show up in Home Assistant.
+    @Volatile private var mainAlive = SystemClock.elapsedRealtime()
+    private var mainHangLogged = false
+    private val mainWatchdog = object : Runnable {
+        override fun run() {
+            val now = SystemClock.elapsedRealtime()
+            val stuck = now - mainAlive
+            if (stuck > 20000 && !mainHangLogged) {
+                mainHangLogged = true
+                BridgeLog.w("Oberfläche reagiert seit ${stuck / 1000} s nicht (Hauptthread blockiert)")
+            } else if (stuck < 20000 && mainHangLogged) {
+                mainHangLogged = false
+                BridgeLog.i("Oberfläche reagiert wieder")
+            }
+            Handler(Looper.getMainLooper()).post { mainAlive = SystemClock.elapsedRealtime() }
+            handler.postDelayed(this, 10000)
+        }
     }
 
     /** MCP endpoint for assistants (port 8765); uses whatever MQTT connection the bridge has. */
@@ -286,6 +309,20 @@ class BridgeService : Service(), MeshListener {
                     BridgeLog.e("Import fehlgeschlagen", t)
                 }
             }.start()
+            "show_kiosk" -> if (Config(this).kioskEnabled) {
+                try {
+                    val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+                    @Suppress("DEPRECATION")
+                    pm.newWakeLock(PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP, "eglobridge:show")
+                        .acquire(5000)
+                } catch (_: Throwable) { }
+                Handler(Looper.getMainLooper()).post {
+                    try {
+                        startActivity(Intent(this, KioskActivity::class.java)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
+                    } catch (t: Throwable) { BridgeLog.w("Kiosk konnte nicht nach vorne geholt werden: ${t.message}") }
+                }
+            }
             "check_update" -> handler.post(updateCheck)
             "install_update" -> Thread {
                 try {

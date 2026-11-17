@@ -1096,7 +1096,16 @@ class MqttBridge(
                 val on = v.uppercase() == "ON"
                 mainHandler.post {
                     val k = KioskControl.ui
-                    if (k != null) k.setScreen(on) else KioskControl.screenOn = on
+                    when {
+                        k != null -> k.setScreen(on)
+                        on -> {
+                            // kiosk not in front (covered or paused): bring it back instead of only
+                            // flipping the flag – otherwise "Bildschirm an" from HA does nothing
+                            KioskControl.wakeRequested = true
+                            onServiceCommand?.invoke("show_kiosk")
+                        }
+                        else -> KioskControl.screenOn = false
+                    }
                 }
                 return
             }
