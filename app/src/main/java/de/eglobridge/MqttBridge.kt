@@ -96,6 +96,9 @@ class MqttBridge(
     private val updateTopic = "$bTopic/update"
     private val updateInstall = "$bTopic/update/install"
     private val micTopic = "$bTopic/mic"
+    /** Health of the voice satellite's microphone ("liefert Ton", "keine Daten", …) + attributes. */
+    private val voiceMicTopic = "$bTopic/voice_mic"
+    private val voiceMicAttrTopic = "$bTopic/voice_mic/attributes"
     /** Which lamps this bridge is responsible for (per-bridge switches in HA). */
     private val lampAssign = "$bTopic/lamp"
     private val allAssign = "$bTopic/lamps_all"
@@ -113,6 +116,9 @@ class MqttBridge(
     private val configSet = "$bTopic/config/set"
     @Volatile var hasMicPermission: () -> Boolean = { true }
     private var micState = ""
+    private var voiceMicState = ""
+    private var voiceMicSince = 0L
+    private var voiceMicPublished = ""
     private val screenTopic = "$bTopic/screen"
     private val brightTopic = "$bTopic/brightness"
     private val timeoutTopic = "$bTopic/screen_timeout"
@@ -329,6 +335,8 @@ class MqttBridge(
         publish(debugTopic, if (BridgeLog.verbose) "ON" else "OFF", retain = true)
         micState = ""
         updateMic()
+        voiceMicPublished = ""
+        publishVoiceMic()
         publishKiosk()
         publishConfig()
         publishUpdate(inProgress = false)
@@ -580,6 +588,16 @@ class MqttBridge(
             .put("entity_category", "diagnostic")
             .put("device", bridgeDevice).toString(), retain = true, qos = 1)
 
+        publish("homeassistant/sensor/eglo_bridge_${bridgeId}_voice_mic/config", JSONObject()
+            .put("name", "Sprach-Mikrofon")
+            .put("unique_id", "eglo_bridge_${bridgeId}_voice_mic")
+            .put("state_topic", voiceMicTopic)
+            .put("json_attributes_topic", voiceMicAttrTopic)
+            .put("availability_topic", avail)
+            .put("icon", "mdi:microphone-message")
+            .put("entity_category", "diagnostic")
+            .put("device", bridgeDevice).toString(), retain = true, qos = 1)
+
         // ---- kiosk (dashboard screen of this tablet)
         publish("homeassistant/switch/eglo_bridge_${bridgeId}_screen/config", JSONObject()
             .put("name", "Bildschirm")
@@ -785,6 +803,7 @@ class MqttBridge(
     private val recomputeRunnable = object : Runnable {
         override fun run() {
             recompute()
+            publishVoiceMic()
             handler.postDelayed(this, RECOMPUTE_MS)
         }
     }
@@ -1020,6 +1039,28 @@ class MqttBridge(
         if (s == micState) return
         micState = s
         publish(micTopic, s, retain = true)
+    }
+
+    /**
+     * Microphone health of the voice satellite (see [MicHealth]). Published only when it changes;
+     * the attributes say since when, which source is in use, the last error and how often the
+     * microphone had to be reopened – so Home Assistant can warn about a deaf tablet.
+     */
+    private fun publishVoiceMic() {
+        if (!connected) return
+        val s = VoiceSatellite.current?.micStatus() ?: MicHealth.OFF
+        if (s != voiceMicState) { voiceMicState = s; voiceMicSince = System.currentTimeMillis() }
+        if (s == voiceMicPublished) return
+        voiceMicPublished = s
+        publish(voiceMicTopic, s, retain = true)
+        val since = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", java.util.Locale.ROOT)
+            .format(java.util.Date(voiceMicSince))
+        publish(voiceMicAttrTopic, JSONObject()
+            .put("seit", since)
+            .put("quelle", MicHub.activeSource)
+            .put("letzter_fehler", MicHub.lastError)
+            .put("neu_geoeffnet", MicHub.reopenCount)
+            .toString(), retain = true)
     }
 
     private fun publishKiosk() {

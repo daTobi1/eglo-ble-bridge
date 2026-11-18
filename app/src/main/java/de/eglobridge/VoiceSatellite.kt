@@ -511,17 +511,25 @@ class VoiceSatellite(private val ctx: Context, private val version: String) : Ap
     // ------------------------------------------------------------------ microphone
 
     private fun openMic(): Boolean {
-        if (micOpen) return true
-        val wasBlocked = MicHub.blocked
+        if (micOpen && MicHub.isOpen) return true
+        // add() keeps the listener registered even if the microphone cannot be opened right now,
+        // so MicHub's watchdog (and a return of the kiosk to the front) can bring it back
         micOpen = MicHub.add(micListener)
-        if (!micOpen && !wasBlocked) BridgeLog.e("Sprach-Satellit: Mikrofon nicht verfügbar")
         return micOpen
     }
 
     private fun closeMic() {
-        if (!micOpen) return
+        // always unregister: the listener may be registered although opening failed
         MicHub.remove(micListener)
         micOpen = false
+    }
+
+    /** Microphone state for Home Assistant ("Sprach-Mikrofon"). */
+    fun micStatus(): String = when {
+        !cfg.voiceEnabled -> MicHealth.OFF
+        muted -> "stumm (Schalter)"
+        !subscribed -> "wartet auf Home Assistant"
+        else -> MicHub.status()
     }
 
     private fun sendLoop() {
