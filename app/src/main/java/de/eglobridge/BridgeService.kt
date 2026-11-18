@@ -46,7 +46,7 @@ class BridgeService : Service(), MeshListener {
             if (!running) return
             start(ctx)
             // only when the microphone delivers nothing – otherwise every screen wake would reopen it
-            if (MicHub.silent || MicHub.blocked) MicHub.reopenLater()
+            if (MicHub.silent || MicHub.blocked || MicHub.stalled) MicHub.reopenLater()
         }
     }
 

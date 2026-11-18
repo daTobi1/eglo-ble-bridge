@@ -34,7 +34,9 @@ class MusicMode(private val onFrame: (r: Int, g: Int, b: Int, level: Float, beat
     fun start(): Boolean {
         if (running) return true
         queue.clear()
-        if (!MicHub.add(micListener)) return false
+        // add() leaves the listener registered when opening fails – the music mode reports the
+        // failure instead of waiting, so take it out again
+        if (!MicHub.add(micListener)) { MicHub.remove(micListener); return false }
         running = true
         thread = Thread({ loop() }, "music").also { it.start() }
         BridgeLog.i("Musikmodus gestartet")
